@@ -4,17 +4,18 @@
 
 ## 📖 目录
 
-- [游戏特色](#游戏特色)
-- [游戏模式](#游戏模式)
-- [操作说明](#操作说明)
-- [奖励系统](#奖励系统)
-- [BOSS机制](#boss机制)
-- [CDK兑换码](#cdk兑换码)
-- [安装运行](#安装运行)
-- [项目结构](#项目结构)
-- [配置说明](#配置说明)
-- [开发说明](#开发说明)
+- [游戏特色](#-game-features)
+- [游戏模式](#-game-modes)
+- [操作说明](#-controls)
+- [奖励系统](#-reward-system)
+- [BOSS机制](#-boss-mechanics)
+- [CDK兑换码](#-cdk-codes)
+- [安装运行](#-installation)
+- [项目结构](#-project-structure)
+- [配置说明](#-configuration)
+- [开发说明](#-development)
 
+<a id="-game-features"></a>
 ## 🌟 游戏特色
 
 ### 核心玩法
@@ -34,6 +35,7 @@
 - **奖励机制**：消灭率越高，奖励越丰厚
 - **BOSS阶段**：BOSS根据血量分为3个战斗阶段，攻击模式不同
 
+<a id="-game-modes"></a>
 ## 🎯 游戏模式
 
 ### 1. 普通模式
@@ -48,6 +50,7 @@
 - 难度增长系数：1.5（更平缓）
 - BOSS奖励耗尽后给3个普通奖励
 
+<a id="-controls"></a>
 ## 🎮 操作说明
 
 | 操作 | 按键 | 说明 |
@@ -58,6 +61,7 @@
 | 清屏 | 鼠标左键 | 使用子弹清除道具（如有） |
 | 选择奖励 | 鼠标左键 | 点击奖励按钮 |
 
+<a id="-reward-system"></a>
 ## 🎁 奖励系统
 
 ### 普通奖励（3选1/2选1/1选1）
@@ -91,6 +95,7 @@
 
 **注意**：BOSS奖励中的"后续XX+翻倍"是指**未来获得的该类奖励效果翻倍**，不是当前属性立即翻倍。
 
+<a id="-boss-mechanics"></a>
 ## 👾 BOSS机制
 
 ### 血量计算
@@ -130,6 +135,7 @@ BOSS根据血量百分比切换攻击模式：
 - 左右移动，碰边界反弹
 - 随机改变移动方向
 
+<a id="-cdk-codes"></a>
 ## 🔑 CDK兑换码
 
 在游戏开始界面输入CDK兑换码，可获得初始属性加成：
@@ -146,6 +152,7 @@ BOSS根据血量百分比切换攻击模式：
 - 无效CDK会提示"CDK不存在"
 - 激活成功会显示绿色提示框（3秒）
 
+<a id="-installation"></a>
 ## 📦 安装运行
 
 ### 环境要求
@@ -190,6 +197,7 @@ pyinstaller ScrollShooter.spec
 
 打包后的exe位于 `dist/` 目录。
 
+<a id="-project-structure"></a>
 ## 📁 项目结构
 
 ```
@@ -224,6 +232,7 @@ scroll-shooter/
 └── dist/                 # 打包输出目录
 ```
 
+<a id="-configuration"></a>
 ## ⚙️ 配置说明
 
 所有游戏参数集中在 `cfg.py` 中，方便调整：
@@ -269,6 +278,7 @@ BOSS_STAGE3_BULLET_SPEED = 10
 BOSS_STAGE3_MIN_INTERVAL = 350
 ```
 
+<a id="-development"></a>
 ## 💻 开发说明
 
 ### 代码架构
