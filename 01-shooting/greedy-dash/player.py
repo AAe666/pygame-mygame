@@ -32,8 +32,10 @@ class Player:
         # 临时分身（大宝箱"新增单位"奖励，持续 TEMP_CLONE_TIME 秒）
         self.temp_clones = []            # [{"timer":float,"alive":bool}, ...]
         # 金身（无敌道具）：拾取后存入道具槽，左键使用进入 INVULN_TIME 秒无敌
-        self.invuln_item = False         # 是否持有金身
+        self.invuln_item = False         # 是否持有无敌道具
         self.invuln_timer = 0.0          # 无敌剩余时间
+        # 分身道具：拾取后存入道具槽，右键释放召唤临时分身
+        self.clone_item = False          # 是否持有分身道具
 
     # ---------- 单位管理 ----------
     def add_unit(self):
@@ -123,7 +125,7 @@ class Player:
 
     # ---------- 金身（无敌道具）----------
     def add_invuln_item(self):
-        """获得金身道具（仅持有一个）。已有则返回 False。"""
+        """获得无敌道具（仅持有一个）。已有则返回 False。"""
         if self.invuln_item:
             return False
         self.invuln_item = True
@@ -139,6 +141,21 @@ class Player:
 
     def is_invincible(self):
         return self.invuln_timer > 0
+
+    # ---------- 分身道具 ----------
+    def add_clone_item(self):
+        """获得分身道具（仅持有一个）。已有则返回 False。"""
+        if self.clone_item:
+            return False
+        self.clone_item = True
+        return True
+
+    def use_clone(self):
+        """使用分身道具：召唤一个临时分身。无道具返回 False。"""
+        if not self.clone_item:
+            return False
+        self.clone_item = False
+        return self.add_temp_clone()
 
     # ---------- 属性成长 ----------
     def apply_attack(self, amount):
