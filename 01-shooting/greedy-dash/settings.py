@@ -9,6 +9,7 @@ SCREEN_W = 480          # 竖屏宽度
 SCREEN_H = 720          # 竖屏高度
 FPS = 60                # 锁定帧率
 TITLE = "Greedy Dash"
+AUTHOR = "波斯睫毛"
 DIVIDER_X = SCREEN_W // 2   # 中央垂直分割线 x 坐标 (240)：左=宝箱区，右=怪物区
 
 # ---------- 颜色 (RGB 元组) ----------
@@ -97,22 +98,25 @@ C_SHIELD = (120, 200, 255)      # 护盾淡蓝保护罩
 # 小宝箱奖励概率（不再出分身）
 P_ATK = 0.70       # 攻击力
 P_SPD = 0.30       # 攻速
-# 大宝箱奖励概率（护盾满时其 15% 并入攻击增幅）
-BIG_P_ATK = 40        # 攻击增幅
+# 大宝箱奖励概率（护盾满时其 15% 并入攻击增幅；金身已持有时其 15% 并入攻击增幅）
+BIG_P_ATK = 25        # 攻击增幅
 BIG_P_SPD = 25        # 超载火力
 BIG_P_SHIELD = 15     # 护盾
-BIG_P_UNIT = 20       # 分身
+BIG_P_UNIT = 20       # 临时分身（持续 3 秒）
+BIG_P_INVULN = 15     # 金身（无敌 1 秒道具）
 
 # ---------- 怪物 / 波次 ----------
 MONSTER_SPEED = 80             # 下落速度 px/s
-# 每波怪物数（随波数递增）：第 n 波 = 8 + (n-1)*2
-MONSTER_COUNT_BASE = 8
+# 每波怪物数（随波数递增）：第 n 波 = 12 + (n-1)*2
+MONSTER_COUNT_BASE = 12
 MONSTER_COUNT_STEP = 2
 WAVE_SPAWN_INTERVAL = 0.8      # 同波内生成间隔（秒）
 WAVE_BANNER_TIME = 3.0         # 波次提示持续时间（秒，淡退；非阻塞，不影响出怪）
 MONSTER_HP_BASE = 2            # 第 1 波怪物血量（固定，不随难度变化）
-# 难度递增：第 1 波不变；第 2 波起血量乘以系数 1 + DIFFICULTY_STEP*(波次-1)
-DIFFICULTY_STEP = 0.6          # 每波血量乘数增量（第 2 波 +60%，第 3 波 +120%...）
+# 难度递增：第 1 波不变；第 2 波起乘以二次曲线系数
+# scale = 1 + DIFFICULTY_LIN*d + DIFFICULTY_QUAD*d²   (d = 波次-1)
+DIFFICULTY_LIN = 0.6           # 线性项（第 2 波 +60%）
+DIFFICULTY_QUAD = 0.2          # 二次项（后期加速，第 5 波 +320%）
 MONSTER_W = 32
 MONSTER_H = 32
 # 并排成群生成：5% 三个并排 / 10% 两个并排 / 85% 单个（空间不足时自动降级）
@@ -137,19 +141,19 @@ def chest_hp(wave):
 
 
 def monster_count(wave):
-    """每波怪物数：8 + (波数-1) * 2。"""
+    """每波怪物数：12 + (波数-1) * 2。"""
     return MONSTER_COUNT_BASE + (wave - 1) * MONSTER_COUNT_STEP
 
 
 def monster_hp(wave):
-    """每波怪物血量（二次增长 + 难度系数）。
-    第 1 波 = 2（固定不变）；第 2 波起乘以难度系数：
-    HP(w) = (2 + (w-1) + (w-1)²) × (1 + DIFFICULTY_STEP*(w-1))
-    第 1 波=2，第 7 波≈202。
+    """每波怪物血量（二次增长 + 二次曲线难度系数）。
+    第 1 波 = 2（固定不变）；第 2 波起乘以二次曲线系数：
+    HP(w) = (2 + d + d²) × (1 + 0.6·d + 0.2·d²)    , d = w-1
+    第 1 波=2，第 5 波=145。
     """
     d = wave - 1
     base = MONSTER_HP_BASE + d + d * d
-    scale = 1.0 + DIFFICULTY_STEP * d
+    scale = 1.0 + DIFFICULTY_LIN * d + DIFFICULTY_QUAD * d * d
     return int(round(base * scale))
 
 
@@ -159,3 +163,36 @@ def attack_bonus(tier):
     即 1 + tier*(tier+1)/2。
     """
     return 1 + tier * (tier + 1) // 2
+
+
+# ---------- BOSS 系统 ----------
+WAVE_TOTAL = 5                 # 总波数（每波清怪后出 BOSS）
+BOSS_HP_MULT = 50              # BOSS 血量 = 该波怪物血量 × 50
+BOSS_Y = 92                    # BOSS 中心 y（固定在顶部，不下落）
+BOSS_INTRO_TIME = 2.0          # BOSS 出场展示时长（秒，期间游戏暂停）
+BOSS_BULLET_SPEED = 200        # BOSS 普通子弹速度
+BOSS_BULLET_FAST = 320         # BOSS 快速子弹速度
+# BOSS 配色
+C_BOSS_BODY = (90, 30, 80)
+C_BOSS_EDGE = (40, 10, 35)
+C_BOSS_GLOW = (200, 60, 160)
+C_BOSS_EYE = (255, 220, 120)
+C_BOSS_BULLET = (255, 90, 130)
+C_BOSS_BULLET2 = (255, 180, 80)
+C_BOSS_HP_BG = (50, 20, 30)
+C_BOSS_HP = (255, 80, 110)
+C_BEAM_WARN = (255, 80, 80)
+C_BEAM_FIRE = (255, 240, 120)
+# 棱镜哨卫光柱：均匀分段覆盖 [BEAM_SEG_START, BEAM_SEG_END]
+# 一阶段 5 段，二阶段 9 段，奇偶轮换攻击（段索引奇偶交替发射）
+BEAM_SEG_START = 24
+BEAM_SEG_END = 456
+
+# ---------- 金身（无敌道具）与临时分身 ----------
+TEMP_CLONE_TIME = 3.0          # 临时分身持续时间（秒）
+TEMP_CLONE_MAX = 3             # 临时分身同时存在上限
+INVULN_TIME = 2.0              # 金身无敌持续时间（秒）
+INVULN_SLOT_POS = (26, 62)     # 金身道具槽中心（左上角，暂停键下方，避开宝箱）
+INVULN_SLOT_R = 14             # 道具槽半径（缩小以免遮挡宝箱）
+C_INVULN_GOLD = (255, 215, 90)   # 金身金边 / 图标
+C_INVULN_SLOT = (90, 75, 35)     # 空槽暗金

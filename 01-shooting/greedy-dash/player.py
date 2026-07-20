@@ -29,6 +29,11 @@ class Player:
         self.speed_bonus = 0.0           # 攻速加成累计
         self.fire_timer = 0.0            # 射击计时
         self.t = 0.0                     # 动画时间
+        # 临时分身（大宝箱"新增单位"奖励，持续 TEMP_CLONE_TIME 秒）
+        self.temp_clones = []            # [{"timer":float,"alive":bool}, ...]
+        # 金身（无敌道具）：拾取后存入道具槽，左键使用进入 INVULN_TIME 秒无敌
+        self.invuln_item = False         # 是否持有金身
+        self.invuln_timer = 0.0          # 无敌剩余时间
 
     # ---------- 单位管理 ----------
     def add_unit(self):
@@ -87,6 +92,54 @@ class Player:
             self.alive_units[i] = False
             self.shields[i] = False
 
+    # ---------- 临时分身 ----------
+    def add_temp_clone(self):
+        """召唤一个持续 TEMP_CLONE_TIME 秒的临时分身（最多 TEMP_CLONE_MAX 个）。"""
+        if len(self.temp_clones) >= TEMP_CLONE_MAX:
+            return False
+        self.temp_clones.append({"timer": TEMP_CLONE_TIME, "alive": True})
+        return True
+
+    def clone_positions(self):
+        """存活临时分身的中心 x 坐标（排布在主队列两侧外侧）。"""
+        pos = []
+        half_span = (self.units - 1) / 2.0 * UNIT_SPACING + UNIT_W / 2
+        base = half_span + UNIT_SPACING * 0.7
+        alive = [c for c in self.temp_clones if c["alive"]]
+        for i in range(len(alive)):
+            side = -1 if i % 2 == 0 else 1
+            k = (i // 2) + 1
+            pos.append(self.x + side * (base + (k - 1) * UNIT_SPACING))
+        return pos
+
+    def destroy_clone(self):
+        """销毁一个存活临时分身（被 BOSS 子弹命中时）。成功返回 True。"""
+        for c in self.temp_clones:
+            if c["alive"]:
+                c["alive"] = False
+                self.temp_clones = [c for c in self.temp_clones if c["alive"]]
+                return True
+        return False
+
+    # ---------- 金身（无敌道具）----------
+    def add_invuln_item(self):
+        """获得金身道具（仅持有一个）。已有则返回 False。"""
+        if self.invuln_item:
+            return False
+        self.invuln_item = True
+        return True
+
+    def use_invuln(self):
+        """使用金身：进入 INVULN_TIME 秒无敌。无道具返回 False。"""
+        if not self.invuln_item:
+            return False
+        self.invuln_item = False
+        self.invuln_timer = INVULN_TIME
+        return True
+
+    def is_invincible(self):
+        return self.invuln_timer > 0
+
     # ---------- 属性成长 ----------
     def apply_attack(self, amount):
         self.attack += amount
@@ -112,6 +165,15 @@ class Player:
     def update(self, dt):
         self.t += dt
         self.fire_timer += dt
+        # 无敌计时
+        if self.invuln_timer > 0:
+            self.invuln_timer = max(0.0, self.invuln_timer - dt)
+        # 临时分身计时：到期即消失
+        for c in self.temp_clones:
+            c["timer"] -= dt
+            if c["timer"] <= 0:
+                c["alive"] = False
+        self.temp_clones = [c for c in self.temp_clones if c["alive"]]
 
     def should_fire(self):
         if self.fire_timer >= self.fire_interval:
@@ -121,8 +183,14 @@ class Player:
 
     # ---------- 绘制 ----------
     def draw(self, screen):
+        # 无敌闪烁（约 9Hz 亮灭），代表无敌状态
+        if self.is_invincible() and int(self.t * 18) % 2 == 0:
+            return
         for idx, px in enumerate(self.unit_positions()):
             self._draw_unit(screen, px, idx == 0, self.shields[idx])
+        # 临时分身（用分身配色，无护盾）
+        for cx in self.clone_positions():
+            self._draw_unit(screen, cx, False, False)
 
     def _draw_unit(self, screen, cx, is_body, has_shield):
         y = self.y

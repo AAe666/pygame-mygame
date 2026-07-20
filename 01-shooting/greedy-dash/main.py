@@ -18,6 +18,7 @@ import pygame
 import settings as S
 from player import Player, _glow, _glow_alpha
 from enemy import Chest, Monster, BigChest
+from boss import make_boss
 from particle import ParticleSystem, StarField
 import ui
 
@@ -108,10 +109,20 @@ class Game:
         self.spawn_timer = S.WAVE_SPAWN_INTERVAL  # 让第一只怪物在第 1 帧就生成
         self.wave_banner_timer = S.WAVE_BANNER_TIME  # 波次提示（非阻塞，3s 淡退）
         self.wave_banner_wave = self.wave
-        self.state = "playing"       # playing / paused / gameover
+        self.state = "playing"       # playing / paused / gameover / victory
         self.big_chest = None          # 当前大宝箱（最多 1 个）
-        self.flash = 0.0                  # 击破大宝箱时的屏幕闪白计时
+        self.flash = 0.0                  # 击破大宝箱/BOSS 时的屏幕闪白计时
         self.big_reward = None             # (文字, 颜色, 剩余时间) 大宝箱奖励提示
+        # BOSS 系统
+        self.boss = None                  # 当前 BOSS（最多 1 个）
+        self.boss_bullets = []            # BOSS 发射的敌方子弹
+        self.boss_intro_timer = 0.0       # BOSS 出场展示倒计时
+        # 通关结算统计
+        self.kill_count = 0               # 击杀怪物数（含召唤物，不含 BOSS）
+        self.bosses_defeated = 0          # 击败 BOSS 数
+        self.game_time = 0.0              # 游戏时长（秒，仅 active/boss 计时）
+        self.chests_broken = 0            # 击破小宝箱数
+        self.big_chests_broken = 0        # 击破大宝箱数
         self._spawn_big_chest()   # 初始即有一个大宝箱（wave 已确定，放最后）
 
     def _make_chests(self):
@@ -168,32 +179,82 @@ class Game:
         return count
 
     def _update_wave(self, dt):
-        # 仅 active 状态：生成怪物；清空后立即进入下一波（见下方判定）
+        # active：生成怪物；清空后进入 BOSS 出场展示
         if self.wave_state == "active":
             target = S.monster_count(self.wave)
-            # 全部生成且场上无怪物 -> 立即进入下一波（不等待）
+            # 全部生成且场上无怪物 -> BOSS 登场
             if self.spawned_count >= target and not self.monsters:
-                self.wave += 1
-                self.big_chest = None
-                self._spawn_big_chest()   # 进入下一波重置大宝箱
-                self.wave_state = "active"
-                self.spawned_count = 0
-                self.spawn_timer = S.WAVE_SPAWN_INTERVAL  # 下一波首只立即生成
-                # 显示下一波提示（非阻塞，3 秒淡退）
-                self.wave_banner_timer = S.WAVE_BANNER_TIME
-                self.wave_banner_wave = self.wave
-                target = S.monster_count(self.wave)  # 切换为新波目标
+                self._spawn_boss()
+                return
             # 按间隔生成怪物（剩余名额限制，保证本波总数精确）
             if self.spawned_count < target:
                 self.spawn_timer += dt
                 if self.spawn_timer >= S.WAVE_SPAWN_INTERVAL:
                     self.spawn_timer = 0.0
                     self.spawned_count += self._spawn_monster(target - self.spawned_count)
+        elif self.wave_state == "boss":
+            self.boss.update(dt, self.player)
+            # 移交 BOSS 产生的子弹 / 召唤物给主循环统一处理
+            if self.boss.bullets:
+                self.boss_bullets.extend(self.boss.bullets)
+                self.boss.bullets = []
+            if self.boss.summons:
+                self.monsters.extend(self.boss.summons)
+                self.boss.summons = []
+            if self.boss.dead:
+                self._on_boss_dead()
+
+    # ---------- BOSS ----------
+    def _spawn_boss(self):
+        """清怪完毕：生成 BOSS 并进入出场展示（暂停玩法）。
+        清空所有子弹、隐藏宝箱，防止玩家在 BOSS 阶段恶意刷宝箱。"""
+        self.boss = make_boss(self.wave)
+        self.boss.intro = True
+        self.boss.x = S.SCREEN_W // 2
+        self.boss.y = S.SCREEN_H // 2 - 20   # 居中放大展示
+        self.big_chest = None
+        self.bullets = []                    # 清空所有玩家子弹
+        self.boss_bullets = []               # 清空 BOSS 子弹
+        self.wave_state = "boss_intro"
+        self.boss_intro_timer = S.BOSS_INTRO_TIME
+
+    def _start_boss_fight(self):
+        """出场展示结束：BOSS 移至顶部，开始战斗。"""
+        self.boss.intro = False
+        self.boss.x = S.SCREEN_W // 2
+        self.boss.y = S.BOSS_Y
+        self.boss.fire_timer = 0.0
+        self.wave_state = "boss"
+
+    def _on_boss_dead(self):
+        """BOSS 死亡：清场特效 + 进入下一波或胜利结算。"""
+        self.bosses_defeated += 1
+        bx, by = self.boss.x, self.boss.y
+        self.particles.burst(bx, by, S.C_BOSS_GLOW, 40, 220, 0.8, 4)
+        self.particles.burst(bx, by, (255, 240, 180), 30, 280, 0.6, 3)
+        self.flash = 0.25
+        self.boss = None
+        self.boss_bullets = []
+        self.monsters = []          # 清掉残留召唤物
+        if self.wave >= S.WAVE_TOTAL:
+            self.wave_state = "done"
+            self.state = "victory"
+        else:
+            self.wave += 1
+            self.big_chest = None
+            self._spawn_big_chest()   # 进入下一波重置大宝箱
+            self.wave_state = "active"
+            self.spawned_count = 0
+            self.spawn_timer = S.WAVE_SPAWN_INTERVAL  # 下一波首只立即生成
+            # 显示下一波提示（非阻塞，3 秒淡退）
+            self.wave_banner_timer = S.WAVE_BANNER_TIME
+            self.wave_banner_wave = self.wave
 
     # ---------- 奖励 ----------
     def _break_chest(self, chest):
         chest.break_()
         self.global_level += 1
+        self.chests_broken += 1
         r = random.random()
         if r < S.P_ATK:
             amt = S.attack_bonus(self.wave // 4)
@@ -208,19 +269,24 @@ class Game:
     # ---------- 大宝箱奖励 ----------
     def _break_big_chest(self, chest):
         """大宝箱击破奖励（加权概率）：
-        护盾可用：攻击增幅 40 / 超载火力 25 / 护盾 15 / 分身 20
-        护盾已满：护盾的 15% 并入攻击增幅 -> 攻击增幅 55 / 超载火力 25 / 分身 20
+        攻击增幅 25 / 超载火力 25 / 护盾 15 / 临时分身 20 / 金身 15
+        护盾已满 -> 护盾的 15% 并入攻击增幅
+        金身已持有 -> 金身的 15% 并入攻击增幅
         """
-        if self.player.all_shielded():
-            # 护盾满：其 15% 并入攻击增幅
-            weights = [("atk", S.BIG_P_ATK + S.BIG_P_SHIELD),
-                       ("spd", S.BIG_P_SPD),
-                       ("unit", S.BIG_P_UNIT)]
-        else:
-            weights = [("atk", S.BIG_P_ATK),
-                       ("spd", S.BIG_P_SPD),
-                       ("shield", S.BIG_P_SHIELD),
-                       ("unit", S.BIG_P_UNIT)]
+        self.big_chests_broken += 1
+        atk_w = S.BIG_P_ATK
+        spd_w = S.BIG_P_SPD
+        shield_w = S.BIG_P_SHIELD if not self.player.all_shielded() else 0
+        unit_w = S.BIG_P_UNIT
+        invuln_w = S.BIG_P_INVULN if not self.player.invuln_item else 0
+        # 被排除的权重并入攻击增幅
+        atk_w += (S.BIG_P_SHIELD - shield_w) + (S.BIG_P_INVULN - invuln_w)
+        weights = [("atk", atk_w), ("spd", spd_w)]
+        if shield_w:
+            weights.append(("shield", shield_w))
+        weights.append(("unit", unit_w))
+        if invuln_w:
+            weights.append(("invuln", invuln_w))
         kinds = [k for k, _ in weights]
         ws = [w for _, w in weights]
         kind = random.choices(kinds, ws)[0]
@@ -234,11 +300,14 @@ class Game:
         elif kind == "shield":
             self.player.add_shield_random()
             msg, col = "获得护盾!", S.C_SHIELD
-        else:  # unit 分身
-            if self.player.add_unit():
-                msg, col = "新增单位!", S.C_CLONE_GLOW
+        elif kind == "invuln":
+            self.player.add_invuln_item()
+            msg, col = "获得金身!", S.C_INVULN_GOLD
+        else:  # unit 临时分身（持续 3 秒）
+            if self.player.add_temp_clone():
+                msg, col = "召唤分身!(3秒)", S.C_CLONE_GLOW
             else:
-                # 单位已满，回退为攻击增幅
+                # 分身已满，回退为攻击增幅
                 amt = 2 * S.attack_bonus(self.wave // 4)
                 self.player.apply_attack(amt)
                 msg, col = "攻击增幅! +%d" % amt, S.C_GOLD
@@ -250,6 +319,15 @@ class Game:
 
     # ---------- 碰撞 ----------
     def _collisions(self):
+        # 玩家子弹 vs BOSS（战斗中）
+        if self.wave_state == "boss" and self.boss is not None and not self.boss.dead:
+            for b in self.bullets:
+                if self.boss.hit_test(b.x, b.y):
+                    self.boss.hit(b.damage)
+                    self.particles.burst(b.x, b.y, S.C_BOSS_GLOW, 6, 120, 0.3, 2)
+                    b.y = -999
+                    if self.boss.dead:
+                        break
         # 子弹 vs 大宝箱（屏幕内才可被击中；击破给特殊奖励）
         if self.big_chest is not None:
             c = self.big_chest
@@ -264,32 +342,75 @@ class Game:
                             self.big_chest = None
                         break
         # 子弹 vs 宝箱（带容差的矩形判定，让多单位时偏离中心的子弹也能命中）
-        for b in self.bullets:
-            for c in self.chests:
-                if c.alive and abs(b.x - c.x) <= S.CHEST_HIT_X \
-                        and abs(b.y - c.y) <= S.CHEST_HIT_Y:
-                    c.hit(b.damage)
-                    if c.hp <= 0:
-                        self._break_chest(c)
-                    b.y = -999  # 标记移除
-                    break
+        # 仅 active 阶段生效（BOSS 阶段宝箱已隐藏）
+        if self.wave_state == "active":
+            for b in self.bullets:
+                for c in self.chests:
+                    if c.alive and abs(b.x - c.x) <= S.CHEST_HIT_X \
+                            and abs(b.y - c.y) <= S.CHEST_HIT_Y:
+                        c.hit(b.damage)
+                        if c.hp <= 0:
+                            self._break_chest(c)
+                        b.y = -999  # 标记移除
+                        break
         # 子弹 vs 怪物
         for b in self.bullets:
             if b.y < -100:
                 continue
             for m in self.monsters:
+                if m.dead:
+                    continue
                 if m.rect().collidepoint(b.x, b.y):
                     m.hit(b.damage)
                     if m.dead:
                         self.particles.burst(m.x, m.y, S.C_MON_GLOW, 16, 160, 0.5, 3)
+                        self.kill_count += 1
                     b.y = -999
                     break
+        # BOSS 子弹 vs 玩家：命中 = 一只普通怪物触底；无敌时免疫，分身可替挡
+        if self.boss_bullets:
+            py = self.player.y
+            invuln = self.player.is_invincible()
+            hit_any = False
+            for b in self.boss_bullets:
+                if b.dead:
+                    continue
+                if abs(b.y - py) <= 14:
+                    # 先尝试命中临时分身（无敌时分身也免疫）
+                    hit_clone = False
+                    if not invuln:
+                        for cx in self.player.clone_positions():
+                            if abs(b.x - cx) <= 16:
+                                self.player.destroy_clone()
+                                self.particles.burst(b.x, b.y, S.C_CLONE_GLOW,
+                                                     14, 150, 0.5, 3)
+                                b.dead = True
+                                hit_clone = True
+                                break
+                    if hit_clone:
+                        hit_any = True
+                        continue
+                    # 再命中永久单位（无敌时免疫）
+                    if not invuln:
+                        for ux in self.player.unit_positions():
+                            if abs(b.x - ux) <= 16:
+                                self.player.kill_random_unit()
+                                self.particles.burst(b.x, b.y, S.C_BOSS_BULLET,
+                                                     14, 150, 0.5, 3)
+                                b.dead = True
+                                hit_any = True
+                                break
+            if hit_any:
+                self.boss_bullets = [b for b in self.boss_bullets if not b.dead]
         # 怪物 vs 玩家单位：只要怪物纵向抵达玩家所在行（无论横向位置），
         # 就随机击杀一个存活单位——玩家无法靠躲到角落无限苟活。
+        # 无敌时怪物被挡下但不造成伤害。
         py = self.player.y
+        invuln = self.player.is_invincible()
         for m in list(self.monsters):
             if not m.dead and m.reached_player_line(py):
-                self.player.kill_random_unit()
+                if not invuln:
+                    self.player.kill_random_unit()
                 m.flash = 0.12
                 m.dead = True
                 self.particles.burst(self.player.x, py, S.C_SHIP_GLOW, 14, 150, 0.5, 3)
@@ -299,23 +420,42 @@ class Game:
     # ---------- 更新 ----------
     def update(self, dt):
         if self.state != "playing":
-            # 暂停：完全冻结；游戏结束：仅让粒子/星光继续衰减作为氛围
-            if self.state == "gameover":
+            # 暂停：完全冻结；游戏结束/胜利：仅让粒子/星光继续衰减作为氛围
+            if self.state in ("gameover", "victory"):
                 self.particles.update(dt)
                 self.stars.update(dt)
                 for f in self.floats:
                     f.update(dt)
                 self.floats = [f for f in self.floats if f.life > 0]
+                # 闪白也需衰减，否则胜利/结束时白屏不退
+                if self.flash > 0:
+                    self.flash = max(0.0, self.flash - dt)
             return
+
+        # BOSS 出场展示：冻结一切玩法，仅倒计时 + 氛围 + BOSS 展示动画
+        if self.wave_state == "boss_intro":
+            self.boss_intro_timer -= dt
+            self.boss.t += dt          # 让展示外观动画继续
+            if self.boss_intro_timer <= 0:
+                self._start_boss_fight()
+            self.particles.update(dt)
+            self.stars.update(dt)
+            for f in self.floats:
+                f.update(dt)
+            self.floats = [f for f in self.floats if f.life > 0]
+            return
+
+        # 游戏时长累计（仅实际游玩阶段：active / boss）
+        self.game_time += dt
 
         # 玩家移动：队列中心 x 跟随鼠标（y 固定在底部，不跟随鼠标）
         mx, _ = pygame.mouse.get_pos()
         self.player.follow_mouse(mx, dt)
         self.player.update(dt)
 
-        # 自动射击（全队共享射速，每个单位独立发射）
+        # 自动射击（全队共享射速，每个单位 + 临时分身独立发射）
         if self.player.should_fire():
-            for ux in self.player.unit_positions():
+            for ux in self.player.unit_positions() + self.player.clone_positions():
                 self.bullets.append(Bullet(ux, self.player.y - 10, self.player.attack))
                 self.particles.spawn(ux, self.player.y + 6,
                                      random.uniform(-15, 15), random.uniform(40, 90),
@@ -325,14 +465,20 @@ class Game:
         for b in self.bullets:
             b.update(dt)
         self.bullets = [b for b in self.bullets if not b.off()]
+        # BOSS 子弹
+        for b in self.boss_bullets:
+            b.update(dt)
+        self.boss_bullets = [b for b in self.boss_bullets if not b.off()]
         for m in self.monsters:
             m.update(dt)
         # 移除已死亡（血量归零）或移出屏幕的怪物——死亡怪物必须清除，
         # 否则会继续下落并撞死玩家单位，波次也无法判定清空。
         self.monsters = [m for m in self.monsters
                          if not m.dead and not m.off_screen()]
-        for c in self.chests:
-            c.update(dt, self.wave)
+        # 宝箱仅在 active 阶段更新（BOSS 阶段隐藏，防刷）
+        if self.wave_state == "active":
+            for c in self.chests:
+                c.update(dt, self.wave)
         # 大宝箱：缓慢下落；到达底部边界后消失（不给奖励）
         if self.big_chest is not None:
             self.big_chest.update(dt)
@@ -373,14 +519,22 @@ class Game:
         self.stars.draw(self.screen)
         self.screen.blit(self.divider, (S.DIVIDER_X - 1, 0))
 
-        for c in self.chests:
-            c.draw(self.screen, self.player.t)
+        # 宝箱仅在 active 阶段绘制（BOSS 阶段隐藏，防刷）
+        if self.wave_state == "active":
+            for c in self.chests:
+                c.draw(self.screen, self.player.t)
         if self.big_chest is not None:
             self.big_chest.draw(self.screen, self.player.t)
         for m in self.monsters:
             m.draw(self.screen)
         for b in self.bullets:
             b.draw(self.screen, self.glow_out, self.glow_mid)
+        # BOSS（战斗中）
+        if self.wave_state == "boss" and self.boss is not None:
+            self.boss.draw(self.screen, self.boss.t)
+        # BOSS 子弹
+        for b in self.boss_bullets:
+            b.draw(self.screen, self.player.t)
         self.player.draw(self.screen)
         self.particles.draw(self.screen)
         for f in self.floats:
@@ -390,19 +544,33 @@ class Game:
         ui.draw_pause_button(self.screen,
                              ui.PAUSE_BTN.collidepoint(pygame.mouse.get_pos()))
 
+        # BOSS 出场展示（暂停游戏）：遮罩 + 居中放大外观 + 名字
+        if self.wave_state == "boss_intro" and self.boss is not None:
+            ui.draw_boss_intro(self.screen, self.boss.t)
+            self.boss.draw(self.screen, self.boss.t)
+            ui.draw_boss_intro_name(self.screen, self.boss.name, self.boss.phase,
+                                    self.boss.t)
+        # BOSS 战斗中血条
+        elif self.wave_state == "boss" and self.boss is not None:
+            self.boss.draw_hp_bar(self.screen)
+
         # 波次提示（非阻塞，3 秒淡退）；不影响出怪
         if self.wave_banner_timer > 0:
             a = 255 * (self.wave_banner_timer / S.WAVE_BANNER_TIME)
             ui.draw_wave_intro(self.screen, self.wave_banner_wave, a)
         if self.state == "paused":
-            ui.draw_pause_overlay(self.screen)
+            ui.draw_pause_overlay(self.screen,
+                                  ui.PAUSE_RESTART_BTN.collidepoint(pygame.mouse.get_pos()))
         if self.state == "gameover":
             ui.draw_gameover(self.screen, self.wave,
                              ui.RESTART_BTN.collidepoint(pygame.mouse.get_pos()))
+        if self.state == "victory":
+            ui.draw_victory(self.screen, self,
+                            ui.RESTART_BTN.collidepoint(pygame.mouse.get_pos()))
 
-        # 大宝箱击破：屏幕短暂闪白
+        # 大宝箱/BOSS 击破：屏幕短暂闪白
         if self.flash > 0:
-            a = int(200 * (self.flash / 0.18))
+            a = min(255, int(200 * (self.flash / 0.18)))
             f = pygame.Surface((S.SCREEN_W, S.SCREEN_H), pygame.SRCALPHA)
             f.fill((255, 255, 255, a))
             self.screen.blit(f, (0, 0))
@@ -414,6 +582,13 @@ class Game:
             surf = font.render(msg, True, col)
             rect = surf.get_rect(center=(S.SCREEN_W // 2, S.SCREEN_H // 2 - 120))
             self.screen.blit(surf, rect)
+
+        # 金身道具槽（playing 时显示，持有时显示五角星图标）
+        if self.state == "playing":
+            ui.draw_invuln_slot(self.screen, self.player.invuln_item, self.player.t)
+        # 无敌期间：屏幕四周金色边框
+        if self.player.is_invincible():
+            ui.draw_invuln_border(self.screen, self.player.t)
 
     # ---------- 输入 ----------
     def toggle_pause(self):
@@ -438,7 +613,7 @@ def main():
             pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
     except pygame.error:
         screen = pygame.display.set_mode((S.SCREEN_W, S.SCREEN_H))
-    pygame.display.set_caption(S.TITLE)
+    pygame.display.set_caption("%s  作者：%s" % (S.TITLE, S.AUTHOR))
     clock = pygame.time.Clock()
     game = Game(screen)
     fps_timer = 0.0
@@ -450,7 +625,7 @@ def main():
         fps_timer += dt
         if fps_timer >= 0.5:
             fps_timer = 0.0
-            pygame.display.set_caption("%s  FPS:%.0f" % (S.TITLE, clock.get_fps()))
+            pygame.display.set_caption("%s  作者：%s  FPS:%.0f" % (S.TITLE, S.AUTHOR, clock.get_fps()))
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -467,15 +642,21 @@ def main():
                     game.toggle_pause()
             elif event.type == pygame.MOUSEBUTTONDOWN:
                 mx, my = event.pos
-                if game.state == "gameover":
+                if game.state in ("gameover", "victory"):
                     if ui.RESTART_BTN.collidepoint(mx, my):
                         game.reset()
                 elif game.state == "paused":
                     if ui.RESUME_BTN.collidepoint(mx, my):
                         game.toggle_pause()
+                    elif ui.PAUSE_RESTART_BTN.collidepoint(mx, my):
+                        game.reset()
                 else:
                     if ui.PAUSE_BTN.collidepoint(mx, my):
                         game.toggle_pause()
+                    elif (game.player.invuln_item
+                          and game.wave_state in ("active", "boss")):
+                        # 左键使用金身：进入 1 秒无敌
+                        game.player.use_invuln()
 
         game.update(dt)
         game.draw()

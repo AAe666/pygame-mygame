@@ -44,28 +44,48 @@ def draw_pause_button(screen, hovered=False):
 
 
 # ---------- 暂停遮罩 ----------
-RESUME_BTN = pygame.Rect(SCREEN_W // 2 - 110, SCREEN_H // 2 - 30, 220, 60)
+RESUME_BTN = pygame.Rect(SCREEN_W // 2 - 110, SCREEN_H // 2 - 60, 220, 56)
+PAUSE_RESTART_BTN = pygame.Rect(SCREEN_W // 2 - 110, SCREEN_H // 2 + 20, 220, 50)
 
-def draw_pause_overlay(screen):
+
+def _draw_btn(screen, rect, text, hovered, text_col=C_GOLD):
+    bg = (40, 46, 80, 245) if hovered else (20, 24, 50, 230)
+    pygame.draw.rect(screen, bg, rect, border_radius=12)
+    pygame.draw.rect(screen, C_RESUME_BORDER, rect, 2, border_radius=12)
+    pygame.draw.rect(screen, C_RESUME_BORDER, rect.inflate(-6, -6), 1, border_radius=8)
+    bs = get_font(22, bold=True).render(text, True, text_col)
+    screen.blit(bs, bs.get_rect(center=rect.center))
+
+
+def draw_pause_overlay(screen, restart_hovered=False):
     # 半透明黑色遮罩
     overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
     overlay.fill((*C_OVERLAY, 180))
     screen.blit(overlay, (0, 0))
 
-    # “继续游戏”按钮（圆角矩形 + 科幻边框）
-    pygame.draw.rect(screen, (20, 24, 50, 230), RESUME_BTN, border_radius=14)
-    pygame.draw.rect(screen, C_RESUME_BORDER, RESUME_BTN, 2, border_radius=14)
-    pygame.draw.rect(screen, C_RESUME_BORDER, RESUME_BTN.inflate(-6, -6), 1, border_radius=10)
+    # 标题
+    tf = get_font(40, bold=True)
+    ts = tf.render("已暂停", True, C_TEXT)
+    screen.blit(ts, ts.get_rect(center=(SCREEN_W // 2, SCREEN_H // 2 - 130)))
 
+    # “继续游戏”按钮（圆角矩形 + 科幻边框）
+    pygame.draw.rect(screen, (20, 24, 50, 230), RESUME_BTN, border_radius=12)
+    pygame.draw.rect(screen, C_RESUME_BORDER, RESUME_BTN, 2, border_radius=12)
+    pygame.draw.rect(screen, C_RESUME_BORDER, RESUME_BTN.inflate(-6, -6), 1, border_radius=8)
     # 白色播放三角（指向右）
     cx, cy = RESUME_BTN.center
-    tri = [(cx - 14, cy - 16), (cx - 14, cy + 16), (cx + 20, cy)]
+    tri = [(cx - 14, cy - 13), (cx - 14, cy + 13), (cx + 18, cy)]
     pygame.draw.polygon(screen, C_PLAY_TRI, tri)
+    rl = get_font(18).render("继续游戏", True, C_TEXT_DIM)
+    screen.blit(rl, rl.get_rect(midleft=(cx + 26, cy)))
+
+    # “重新开始”按钮
+    _draw_btn(screen, PAUSE_RESTART_BTN, "重新开始", restart_hovered, text_col=(255, 120, 130))
 
     # 提示文字
-    font = get_font(20)
-    txt = font.render("点击继续游戏", True, C_TEXT_DIM)
-    rect = txt.get_rect(center=(SCREEN_W // 2, RESUME_BTN.bottom + 26))
+    font = get_font(14)
+    txt = font.render("ESC 继续    点击按钮选择", True, C_TEXT_DIM)
+    rect = txt.get_rect(center=(SCREEN_W // 2, PAUSE_RESTART_BTN.bottom + 24))
     screen.blit(txt, rect)
 
 
@@ -161,8 +181,97 @@ class FloatingText:
         screen.blit(surf, (int(self.x - surf.get_width() // 2), int(self.y)))
 
 
+# ---------- BOSS 出场展示（暂停游戏）----------
+def draw_boss_intro(screen, t):
+    """暗色遮罩 + 中央大光晕，BOSS 由主循环在遮罩之上绘制。"""
+    overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+    overlay.fill((0, 0, 0, 170))
+    screen.blit(overlay, (0, 0))
+    cx, cy = SCREEN_W // 2, SCREEN_H // 2 - 20
+    pulse = 1 + 0.18 * math.sin(t * 4)
+    for r, col in [(150 * pulse, (180, 40, 120)),
+                   (100 * pulse, (255, 80, 150)),
+                   (60 * pulse, (255, 200, 200))]:
+        g = pygame.Surface((int(r * 2), int(r * 2)), pygame.SRCALPHA)
+        for rr in range(int(r), 0, -2):
+            a = int(70 * (1 - rr / r))
+            pygame.draw.circle(g, (*col, a), (int(r), int(r)), rr)
+        screen.blit(g, (int(cx - r), int(cy - r)),
+                    special_flags=pygame.BLEND_ADD)
+
+
+def draw_boss_intro_name(screen, name, phase, t):
+    """BOSS 名字（大号、霓虹描边），显示在 BOSS 上方。"""
+    cx = SCREEN_W // 2
+    cy = SCREEN_H // 2 - 130
+    # 顶部小标签
+    tag_f = get_font(20, bold=True)
+    tag = tag_f.render("- BOSS -", True, (255, 120, 160))
+    tag.set_alpha(int(180 + 60 * math.sin(t * 5)))
+    screen.blit(tag, tag.get_rect(center=(cx, cy - 50)))
+    # 名字：双层描边制造霓虹感
+    name_f = get_font(52, bold=True)
+    glow_col = (255, 70, 130) if phase == 2 else (255, 150, 200)
+    for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
+        s = name_f.render(name, True, glow_col)
+        s.set_alpha(120)
+        screen.blit(s, s.get_rect(center=(cx + dx, cy + dy)))
+    main = name_f.render(name, True, (255, 240, 245))
+    screen.blit(main, main.get_rect(center=(cx, cy)))
+    # 副标题：波数
+    sub_f = get_font(16)
+    sub = sub_f.render("准备战斗 ...", True, C_TEXT_DIM)
+    sub.set_alpha(int(150 + 80 * math.sin(t * 3)))
+    screen.blit(sub, sub.get_rect(center=(cx, cy + 46)))
+
+
+# ---------- 金身道具槽 / 无敌金边 ----------
+def draw_invuln_slot(screen, has_item, t):
+    """底部中央的道具槽：空槽暗淡，持有时显示金身图标（五角星）。"""
+    cx, cy = INVULN_SLOT_POS
+    r = INVULN_SLOT_R
+    # 槽底圆
+    slot_col = C_INVULN_GOLD if has_item else C_INVULN_SLOT
+    pygame.draw.circle(screen, (20, 18, 30), (cx, cy), r + 2)
+    pygame.draw.circle(screen, slot_col, (cx, cy), r, 2)
+    if has_item:
+        # 脉动金色光晕
+        pulse = 1 + 0.18 * math.sin(t * 6)
+        gr = int(r * 1.4 * pulse)
+        g = pygame.Surface((gr * 2, gr * 2), pygame.SRCALPHA)
+        for rr in range(gr, 0, -2):
+            a = int(60 * (1 - rr / gr))
+            pygame.draw.circle(g, (*C_INVULN_GOLD, a), (gr, gr), rr)
+        screen.blit(g, (cx - gr, cy - gr), special_flags=pygame.BLEND_ADD)
+        # 五角星图标
+        pts = []
+        for i in range(10):
+            ang = -math.pi / 2 + i / 10 * math.tau + t * 0.5
+            rr = r * 0.62 if i % 2 == 0 else r * 0.28
+            pts.append((cx + math.cos(ang) * rr, cy + math.sin(ang) * rr))
+        pygame.draw.polygon(screen, C_INVULN_GOLD, pts)
+        pygame.draw.polygon(screen, (255, 255, 255), pts, 1)
+
+
+def draw_invuln_border(screen, t):
+    """无敌期间屏幕四周的金色边框（脉动），直观提示处于无敌。"""
+    pulse = 0.7 + 0.3 * math.sin(t * 10)
+    col = (int(255 * pulse), int(215 * pulse), int(90 * pulse))
+    thick = 5
+    pygame.draw.rect(screen, col, (0, 0, SCREEN_W, thick))                  # 上
+    pygame.draw.rect(screen, col, (0, SCREEN_H - thick, SCREEN_W, thick))   # 下
+    pygame.draw.rect(screen, col, (0, 0, thick, SCREEN_H))                  # 左
+    pygame.draw.rect(screen, col, (SCREEN_W - thick, 0, thick, SCREEN_H))   # 右
+
+
 # ---------- 游戏结束 ----------
-RESTART_BTN = pygame.Rect(SCREEN_W // 2 - 110, SCREEN_H * 0.4 + 140, 220, 60)
+RESTART_BTN = pygame.Rect(SCREEN_W // 2 - 110, SCREEN_H - 96, 220, 56)
+
+
+def _fmt_time(t):
+    t = int(t)
+    return "%d:%02d" % (t // 60, t % 60)
+
 
 def draw_gameover(screen, wave, hovered=False):
     overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
@@ -179,11 +288,51 @@ def draw_gameover(screen, wave, hovered=False):
     screen.blit(sub, srect)
 
     # “重新开始”按钮（圆角矩形 + 科幻边框，点击重开）
-    bg = (20, 24, 50, 230) if not hovered else (40, 46, 80, 245)
-    pygame.draw.rect(screen, bg, RESTART_BTN, border_radius=14)
-    pygame.draw.rect(screen, C_RESUME_BORDER, RESTART_BTN, 2, border_radius=14)
-    pygame.draw.rect(screen, C_RESUME_BORDER, RESTART_BTN.inflate(-6, -6), 1, border_radius=10)
-    bf = get_font(24, bold=True)
-    bs = bf.render("重新开始", True, C_GOLD)
-    brect = bs.get_rect(center=RESTART_BTN.center)
-    screen.blit(bs, brect)
+    _draw_btn(screen, RESTART_BTN, "重新开始", hovered, text_col=C_GOLD)
+
+
+# ---------- 通关结算 ----------
+def draw_victory(screen, game, hovered=False):
+    overlay = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
+    overlay.fill((10, 20, 40, 215))
+    screen.blit(overlay, (0, 0))
+
+    # 主标题（霓虹金）
+    cx = SCREEN_W // 2
+    font = get_font(54, bold=True)
+    for dx, dy in [(-2, 0), (2, 0), (0, -2), (0, 2)]:
+        s = font.render("通关结算", True, (255, 180, 60))
+        s.set_alpha(110)
+        screen.blit(s, s.get_rect(center=(cx + dx, 118 + dy)))
+    main = font.render("通关结算", True, (255, 240, 180))
+    screen.blit(main, main.get_rect(center=(cx, 118)))
+
+    sub = get_font(18).render("你击败了全部 %d 位 BOSS！" % game.bosses_defeated,
+                              True, C_TEXT)
+    screen.blit(sub, sub.get_rect(center=(cx, 162)))
+
+    # 战绩面板
+    p = game.player
+    stats = [
+        ("游戏时间", _fmt_time(game.game_time)),
+        ("击杀怪物", game.kill_count),
+        ("击败 BOSS", "%d / %d" % (game.bosses_defeated, WAVE_TOTAL)),
+        ("击破小宝箱", game.chests_broken),
+        ("击破大宝箱", game.big_chests_broken),
+        ("攻击力", p.attack),
+        ("射速/秒", round(1.0 / p.fire_interval, 1)),
+        ("存活单位", "%d / %d" % (p.alive_count(), MAX_UNITS)),
+        ("宝箱等级", game.global_level),
+    ]
+    panel_y = 200
+    flab = get_font(17)
+    fval = get_font(24, bold=True)
+    for i, (k, v) in enumerate(stats):
+        yy = panel_y + i * 36
+        ls = flab.render(k, True, C_TEXT_DIM)
+        screen.blit(ls, (cx - 120, yy))
+        vs = fval.render(str(v), True, C_GOLD)
+        screen.blit(vs, vs.get_rect(midright=(cx + 120, yy + 13)))
+
+    # 重新开始按钮
+    _draw_btn(screen, RESTART_BTN, "再来一局", hovered, text_col=C_GOLD)
