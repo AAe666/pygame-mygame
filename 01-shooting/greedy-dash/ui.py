@@ -607,8 +607,8 @@ def _draw_stats_doc(screen, scroll):
 # ======================================================================
 # 结算界面（通关 / 失败共用统计面板）
 # ======================================================================
-RESTART_BTN = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 80, 220, 50)
-MENU_BACK_BTN = pygame.Rect(SCREEN_W // 2 + 10, SCREEN_H - 80, 220, 50)
+RESTART_BTN = pygame.Rect(SCREEN_W // 2 - 230, SCREEN_H - 130, 220, 50)
+MENU_BACK_BTN = pygame.Rect(SCREEN_W // 2 + 10, SCREEN_H - 130, 220, 50)
 
 
 def _fmt_time(t):
@@ -619,6 +619,7 @@ def _fmt_time(t):
 def _draw_stats_panel(screen, game):
     p = game.player
     total = S.WAVE_TOTAL
+    acc = "%.1f%%" % (game.shots_hit / game.shots_fired * 100) if game.shots_fired else "0.0%"
     stats = [
         ("难度", S.difficulty_name(game.difficulty)),
         ("游戏时间", _fmt_time(game.game_time)),
@@ -630,16 +631,26 @@ def _draw_stats_panel(screen, game):
         ("射速/秒", round(1.0 / p.fire_interval, 1)),
         ("存活单位", "%d / %d" % (p.alive_count(), MAX_UNITS)),
         ("宝箱等级", game.global_level),
+        ("造成的伤害", int(game.damage_dealt)),
+        ("丢失的伤害", int(game.damage_lost)),
+        ("命中率", acc),
     ]
-    cx = SCREEN_W // 2
-    panel_y = 200
-    flab = get_font(17)
-    fval = get_font(24, bold=True)
-    for i, (k, v) in enumerate(stats):
-        yy = panel_y + i * 36
-        screen.blit(flab.render(k, True, C_TEXT_DIM), (cx - 120, yy))
+    # 双列布局：左列 7 项、右列 6 项，避免底部与按钮重叠溢出
+    panel_y = 235
+    row_h = 38
+    flab = get_font(16)
+    fval = get_font(22, bold=True)
+    LX, LVX = 26, 226       # 左列：标签左对齐 x、数值右对齐 x
+    RX, RVX = 254, 474      # 右列
+    for gi, (k, v) in enumerate(stats):
+        if gi < 7:
+            x, vx, i = LX, LVX, gi
+        else:
+            x, vx, i = RX, RVX, gi - 7
+        yy = panel_y + i * row_h
+        screen.blit(flab.render(k, True, C_TEXT_DIM), (x, yy))
         vs = fval.render(_fmt_val(v), True, C_GOLD)
-        screen.blit(vs, vs.get_rect(midright=(cx + 120, yy + 13)))
+        screen.blit(vs, vs.get_rect(midright=(vx, yy + 14)))
 
 
 def draw_victory(screen, game):

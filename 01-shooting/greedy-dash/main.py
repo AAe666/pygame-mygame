@@ -54,6 +54,7 @@ class Bullet:
         self.y = y
         self.damage = damage
         self.trail = [(x, y)]
+        self.consumed = False       # 是否已被命中逻辑处理（用于区分"命中移除"与"飞出屏幕"）
 
     def update(self, dt):
         self.y -= S.BULLET_SPEED * dt
@@ -102,6 +103,7 @@ class Game:
         self.debug_mode = False
         self.debug_count = 0
         self.debug_timer = 0.0
+        self.cheat_buf = ""         # 作弊码输入缓冲（累积字母键）
         self.reset()
 
     def reset(self, difficulty=None):
@@ -133,6 +135,11 @@ class Game:
         self.game_time = 0.0
         self.chests_broken = 0
         self.big_chests_broken = 0
+        # 伤害统计 / 命中率（v3.1.0）
+        self.shots_fired = 0        # 发射子弹数
+        self.shots_hit = 0          # 命中目标子弹数
+        self.damage_dealt = 0       # 造成的伤害（实际扣血）
+        self.damage_lost = 0        # 丢失的伤害（飞出屏幕未命中）
         self._spawn_big_chest()
 
     def start_game(self, difficulty):
@@ -328,11 +335,18 @@ class Game:
                 # 先检测护盾卫星（终焉之主）
                 if self.boss.has_shield() and self.boss.hit_satellite(b.x, b.y, b.damage):
                     self.particles.burst(b.x, b.y, (120, 200, 255), 6, 120, 0.3, 2)
+                    self.shots_hit += 1
+                    self.damage_dealt += b.damage
+                    b.consumed = True
                     b.y = -999
                     continue
                 if self.boss.hit_test(b.x, b.y):
+                    deal = min(b.damage, self.boss.hp)
                     self.boss.hit(b.damage)
                     self.particles.burst(b.x, b.y, S.C_BOSS_GLOW, 6, 120, 0.3, 2)
+                    self.shots_hit += 1
+                    self.damage_dealt += deal
+                    b.consumed = True
                     b.y = -999
                     if self.boss.dead:
                         break
@@ -344,6 +358,9 @@ class Game:
                     if abs(b.x - c.x) <= S.BIG_CHEST_HIT_X \
                             and abs(b.y - c.y) <= S.BIG_CHEST_HIT_Y:
                         c.hit(b.damage)
+                        self.shots_hit += 1
+                        self.damage_dealt += min(b.damage, c.hp)
+                        b.consumed = True
                         b.y = -999
                         if c.hp <= 0:
                             self._break_big_chest(c)
@@ -356,6 +373,9 @@ class Game:
                     if c.alive and abs(b.x - c.x) <= S.CHEST_HIT_X \
                             and abs(b.y - c.y) <= S.CHEST_HIT_Y:
                         c.hit(b.damage)
+                        self.shots_hit += 1
+                        self.damage_dealt += min(b.damage, c.hp)
+                        b.consumed = True
                         if c.hp <= 0:
                             self._break_chest(c)
                         b.y = -999
@@ -369,6 +389,9 @@ class Game:
                     continue
                 if m.rect().collidepoint(b.x, b.y):
                     m.hit(b.damage)
+                    self.shots_hit += 1
+                    self.damage_dealt += min(b.damage, m.hp)
+                    b.consumed = True
                     if m.dead:
                         self.particles.burst(m.x, m.y, S.C_MON_GLOW, 16, 160, 0.5, 3)
                         self.kill_count += 1
@@ -460,12 +483,17 @@ class Game:
         if self.player.should_fire():
             for ux in self.player.unit_positions() + self.player.clone_positions():
                 self.bullets.append(Bullet(ux, self.player.y - 10, self.player.attack))
+                self.shots_fired += 1
                 self.particles.spawn(ux, self.player.y + 6,
                                      random.uniform(-15, 15), random.uniform(40, 90),
                                      0.22, S.C_FLAME, 2, additive=True)
 
         for b in self.bullets:
             b.update(dt)
+        # 统计自然飞出屏幕、未命中的子弹（丢失的伤害）
+        for b in self.bullets:
+            if b.off() and not b.consumed:
+                self.damage_lost += b.damage
         self.bullets = [b for b in self.bullets if not b.off()]
         # BOSS 子弹（追踪弹需 player）
         for b in self.boss_bullets:
@@ -623,6 +651,13 @@ def main():
                         game.state = "paused"
             elif event.type == pygame.KEYDOWN:
                 print("[KEY] %d (%s) state=%s" % (event.key, pygame.key.name(event.key), game.state), flush=True)
+                # 作弊码检测：累积字母输入，匹配 bosijiemao 触发 9999 秒无敌（v3.1.0）
+                # 复用现有无敌机制（is_invincible 立即为真）；新一局 Player 重建即自动复位。
+                if event.unicode and event.unicode.isalpha():
+                    game.cheat_buf = (game.cheat_buf + event.unicode.lower())[-32:]
+                    if game.cheat_buf.endswith("bosijiemao"):
+                        game.player.invuln_timer = 9999
+                        game.cheat_buf = ""
                 # 调试模式：3 秒内连按 D 6 次（menu/playing/paused 可触发；help 下 D 用于翻页）
                 if event.key == pygame.K_d and game.state != "help":
                     game.debug_count += 1

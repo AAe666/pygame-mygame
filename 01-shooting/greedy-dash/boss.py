@@ -625,6 +625,11 @@ class PrismSentinel(Boss):
         self.fire_t = 0.6
         self.phase_cd = 0.5          # 转阶段 0.5s 内不发起攻击
         self._compute_fire_segs()
+        # 转阶段强制回到预警起始：先显示新段位置，phase_cd 阻止立即 fire，
+        # 避免用新位置瞬间打中玩家（v3.1.0 修复）
+        self.bstate = "warn"
+        self._beam_dealt = False
+        self.btimer = self.warn_t
 
     def on_phase3(self):
         self.warn_t = 0.6
@@ -633,6 +638,11 @@ class PrismSentinel(Boss):
         self.use_sweep = True
         self.phase_cd = 0.5
         self._compute_fire_segs()
+        # 转阶段强制回到预警起始：先显示新段位置，phase_cd 阻止立即 fire，
+        # 避免用新位置瞬间打中玩家（v3.1.0 修复）
+        self.bstate = "warn"
+        self._beam_dealt = False
+        self.btimer = self.warn_t
 
     def _seg_count(self):
         return 5 if self.phase == 1 else 7

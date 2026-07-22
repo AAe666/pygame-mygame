@@ -239,7 +239,7 @@ BEAM_SEG_END = 456
 SWEEP_BEAM_ON = 0.8
 SWEEP_BEAM_OFF = 0.8
 SWEEP_BEAM_WIDTH = 26          # 横扫激光宽度
-SWEEP_BEAM_SPEED = 110         # 横扫激光横向移动速度 px/s
+SWEEP_BEAM_SPEED = 50          # 横扫激光横向移动速度 px/s（v3.1.0 减半）
 
 # 追踪导弹转向速度（弧度/秒）——较慢，玩家横向移动可躲
 TRACKING_TURN_SPEED = 0.8
@@ -261,7 +261,7 @@ FINAL_SATELLITE_REGEN_PCT = 0.01  # 护盾存在时本体每秒回血百分比�
 # ---------- 金身（无敌道具）与临时分身 ----------
 TEMP_CLONE_TIME = 3.0          # 临时分身持续时间（秒）
 TEMP_CLONE_MAX = 3             # 临时分身同时存在上限
-INVULN_TIME = 2.0              # 金身无敌持续时间（秒）
+INVULN_TIME = 3.0              # 金身无敌持续时间（秒）（v3.1.0 由 2 秒改为 3 秒）
 INVULN_SLOT_POS = (26, 62)     # 无敌道具槽中心（左上角，暂停键下方，避开宝箱）
 INVULN_SLOT_R = 14             # 道具槽半径（缩小以免遮挡宝箱）
 CLONE_SLOT_POS = (26, 98)      # 分身道具槽中心（无敌槽下方）
