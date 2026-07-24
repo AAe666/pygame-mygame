@@ -6,7 +6,7 @@ Treasure Dash - 全局配置与常量
 
 # ---------- 窗口与基础 ----------
 SCREEN_W = 480          # 竖屏宽度
-SCREEN_H = 720          # 竖屏高度
+SCREEN_H = 720          # 竖屏高度（PC 默认；手机端启动时按设备比例自适应拉高铺满）
 FPS = 60                # 锁定帧率
 TITLE = "Greedy Dash"
 AUTHOR = "波斯睫毛"
@@ -60,7 +60,7 @@ C_TEXT_DIM = (150, 150, 170)
 C_GOLD = (255, 210, 90)
 
 # ---------- 玩家 ----------
-PLAYER_Y = SCREEN_H - 40       # 玩家单位中心 y（底部）
+PLAYER_BOTTOM_GAP = 40         # 玩家单位中心距屏幕底部间距（单位始终贴底）
 UNIT_W = 32
 UNIT_H = 20
 UNIT_SPACING = 36              # 单位中心间距（水平队列）
@@ -175,10 +175,11 @@ MONSTER_SPAWN_MARGIN = 24      # 生成区左右留白（距分割线/右边界�
 
 # ---------- 子弹 ----------
 BULLET_SPEED = 620             # 子弹上行速度 px/s
-BULLET_TRAIL = 5               # 拖尾残影帧数
+BULLET_TRAIL = 3               # 拖尾残影帧数（原 5，减段以降低每帧叠加混合开销）
 
 # ---------- 粒子 ----------
 STAR_COUNT = 50                # 背景星光数量
+PARTICLE_CAP = 120             # 粒子数量上限（手机软渲染下 BLEND_ADD 混合贵，降上限保帧率）
 
 # ---------- 数值递推公式（宝箱/怪物血量、怪物数量）----------
 def chest_hp(wave):

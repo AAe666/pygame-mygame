@@ -55,20 +55,29 @@ class SweepBeam:
         if self.x < -20 or self.x > SCREEN_W + 20:
             self.active = False
 
+    _bar_cache = None
+
+    @classmethod
+    def _get_bar(cls, on):
+        # 缓存光柱贴图：避免横扫激光每帧创建整屏 Surface（手机 GC 抖动主因）
+        if cls._bar_cache is None:
+            cls._bar_cache = {}
+        s = cls._bar_cache.get(on)
+        if s is None:
+            col = (*C_BEAM_FIRE, 130) if on else (*C_BEAM_WARN, 35)
+            s = pygame.Surface((SWEEP_BEAM_WIDTH, S.SCREEN_H), pygame.SRCALPHA)
+            s.fill(col)
+            cls._bar_cache[on] = s
+        return s
+
     def draw(self, screen):
         if not self.active:
             return
+        screen.blit(self._get_bar(self.on),
+                    (int(self.x - SWEEP_BEAM_WIDTH / 2), 0))
         if self.on:
-            col = (*C_BEAM_FIRE, 130)
-            edge = (255, 255, 200)
-        else:
-            col = (*C_BEAM_WARN, 35)
-            edge = None
-        bar = pygame.Surface((SWEEP_BEAM_WIDTH, SCREEN_H), pygame.SRCALPHA)
-        bar.fill(col)
-        screen.blit(bar, (int(self.x - SWEEP_BEAM_WIDTH / 2), 0))
-        if edge:
-            pygame.draw.line(screen, edge, (self.x, 0), (self.x, SCREEN_H), 2)
+            pygame.draw.line(screen, (255, 255, 200), (self.x, 0),
+                             (self.x, S.SCREEN_H), 2)
 
 
 # ---------- BOSS 子弹 ----------
@@ -115,7 +124,7 @@ class BossBullet:
                 self.dead = True
 
     def off(self):
-        return (self.y > SCREEN_H + 20 or self.y < -30
+        return (self.y > S.SCREEN_H + 20 or self.y < -30
                 or self.x < -30 or self.x > SCREEN_W + 30)
 
     def draw(self, screen, t):
@@ -644,6 +653,24 @@ class PrismSentinel(Boss):
         self._beam_dealt = False
         self.btimer = self.warn_t
 
+    _beam_cache = None
+
+    @classmethod
+    def _beam_strip(cls, on, n):
+        # 缓存落点光柱贴图（按 预警/开火 × 段数），避免每帧建 3~7 个整屏 Surface
+        if cls._beam_cache is None:
+            cls._beam_cache = {}
+        key = (on, n)
+        s = cls._beam_cache.get(key)
+        if s is None:
+            total = BEAM_SEG_END - BEAM_SEG_START
+            w = max(1, int(total / n))
+            col = (*C_BEAM_FIRE, 120) if on else (*C_BEAM_WARN, 60)
+            s = pygame.Surface((w, S.SCREEN_H), pygame.SRCALPHA)
+            s.fill(col)
+            cls._beam_cache[key] = s
+        return s
+
     def _seg_count(self):
         return 5 if self.phase == 1 else 7
 
@@ -729,21 +756,16 @@ class PrismSentinel(Boss):
                                (int(x + gx), int(y - h + 6)), 6)
             pygame.draw.circle(screen, (255, 255, 255),
                                (int(x + gx), int(y - h + 6)), 2)
-        # 光柱
-        if self.bstate == "warn":
+        # 光柱（复用缓存贴图，杜绝每帧整屏 Surface 分配）
+        if self.bstate in ("warn", "fire"):
+            on = (self.bstate == "fire")
+            strip = PrismSentinel._beam_strip(on, self._seg_count())
             for s in self.fire_segs:
                 a, b = self._seg_range(s)
-                bar = pygame.Surface((int(b - a), SCREEN_H), pygame.SRCALPHA)
-                bar.fill((*C_BEAM_WARN, 60))
-                screen.blit(bar, (int(a), 0))
-        elif self.bstate == "fire":
-            for s in self.fire_segs:
-                a, b = self._seg_range(s)
-                bar = pygame.Surface((int(b - a), SCREEN_H), pygame.SRCALPHA)
-                bar.fill((*C_BEAM_FIRE, 120))
-                screen.blit(bar, (int(a), 0))
-                pygame.draw.line(screen, (255, 255, 200), (a, 0), (a, SCREEN_H), 2)
-                pygame.draw.line(screen, (255, 255, 200), (b, 0), (b, SCREEN_H), 2)
+                screen.blit(strip, (int(a), 0))
+                if on:
+                    pygame.draw.line(screen, (255, 255, 200), (a, 0), (a, S.SCREEN_H), 2)
+                    pygame.draw.line(screen, (255, 255, 200), (b, 0), (b, S.SCREEN_H), 2)
         # 横扫激光
         self.sweep.draw(screen)
 
@@ -846,7 +868,7 @@ class JudgementCore(Boss):
 
     def _add_marker(self, x, warn_time):
         """在 x 处生成一个爆炸圈，warn_time 秒后爆炸。"""
-        self.markers.append({"x": x, "y": PLAYER_Y,
+        self.markers.append({"x": x, "y": S.SCREEN_H - S.PLAYER_BOTTOM_GAP,
                              "timer": warn_time, "warn": warn_time,
                              "exploded": False, "explode_t": 0.0})
 
@@ -880,7 +902,8 @@ class JudgementCore(Boss):
                 # 爆炸命中判定
                 if not player.is_invincible():
                     for ux in player.unit_positions():
-                        if math.hypot(ux - m["x"], PLAYER_Y - m["y"]) <= BOMB_RADIUS:
+                        if math.hypot(ux - m["x"],
+                                      (S.SCREEN_H - S.PLAYER_BOTTOM_GAP) - m["y"]) <= BOMB_RADIUS:
                             player.kill_random_unit()
                             break
         # 爆炸后 BOMB_LINGER 秒清除
@@ -1149,6 +1172,7 @@ class TwinMirage(Boss):
 # ======================================================================
 class VoidWalker(Boss):
     name = "虚空行者"
+    _warn_flash = None
 
     def __init__(self, x, y, hp, wave):
         super().__init__(x, y, hp, wave)
@@ -1244,11 +1268,13 @@ class VoidWalker(Boss):
                              (x, y),
                              (x + math.cos(a) * 26, y + math.sin(a) * 26), 2)
         pygame.draw.circle(screen, (200, 120, 255), (int(x), int(y)), 8)
-        # 三阶段预警闪
+        # 三阶段预警闪（缓存全屏闪光贴图）
         if self.after_warn:
-            flash = pygame.Surface((SCREEN_W, SCREEN_H), pygame.SRCALPHA)
-            flash.fill((180, 80, 220, 40))
-            screen.blit(flash, (0, 0))
+            if VoidWalker._warn_flash is None:
+                f = pygame.Surface((S.SCREEN_W, S.SCREEN_H), pygame.SRCALPHA)
+                f.fill((180, 80, 220, 40))
+                VoidWalker._warn_flash = f
+            screen.blit(VoidWalker._warn_flash, (0, 0))
 
 
 # ======================================================================

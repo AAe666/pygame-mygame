@@ -197,6 +197,99 @@ venv\Scripts\python.exe -m PyInstaller GreedyDash.spec
 打包完成后，exe 位于 `dist/贪逼牛逼.exe`，可直接双击运行。
 > 若启动报错，请安装 [Microsoft Visual C++ Redistributable](https://learn.microsoft.com/cpp/windows/latest-supported-vc-redist)。
 
+## 📱 移动端移植（Android）
+
+代码层面已完成移动端就绪改造，**可直接编译为 Android APK**。核心改造如下：
+
+- **虚拟分辨率 + 信箱化（letterbox）**：游戏始终以固定 `480×720` 虚拟分辨率绘制，
+  再等比缩放居中贴到真实屏幕，两侧/上下用黑边填充，绝不拉伸变形。
+  PC 上窗口即 `480×720`（缩放 = 1，无黑边）；手机全屏后自动信箱化适配竖屏。
+- **触摸识别**：首次收到 `FINGERDOWN` 事件即进入触摸模式（`touch_mode=True`）。
+- **技能改点图标释放**：移动端没有左右键，改为**点击左上角「无敌 / 分身」图标**释放技能
+  （PC 上仍兼容左键/右键任意处释放）。飞船跟随手指拖动（触摸映射到鼠标移动事件）。
+- **无键盘环境**：作弊码 `bosijiemao`、调试模式（连按 D）依赖键盘，**在手机上不会触发**
+  （相关代码保留但无害，不影响玩法）。
+
+### 移动端操作
+
+| 操作 | 方式 |
+|------|------|
+| 队列左右平移 | 手指在屏幕任意位置**拖动**（飞船实时跟随手指横向位置） |
+| 使用无敌道具 | 持有无敌道具时**点击左上角五角星图标** |
+| 释放分身道具 | 持有分身道具时**点击左上角双菱形图标** |
+| 暂停 / 继续 | 点击左上角暂停按钮 |
+| 重开 / 返回菜单 | 点击对应按钮（与 PC 一致） |
+
+> 提示：点击技能图标时飞船不会跟手移动；只有点在游玩区（非图标）的拖动才控制飞船。
+
+### 打包为 APK（Android）
+
+Windows 无法直接编译 APK，需在 **Linux 或 WSL（Ubuntu，必须是 WSL2）** 中使用 `buildozer`
+（底层 `python-for-android`）完成。iOS 则需 macOS。
+
+> ⚠️ **必须用 WSL2，不能用 WSL1**：WSL1 的内核无法 `execve` NDK 自带的 clang，会报
+> `Exec format error`，导致 jpeg/pygame 等原生配方编译失败。若当前是 WSL1，先在 Windows 管理员
+> PowerShell 执行 `wsl --update` 再 `wsl --set-version Ubuntu 2` 升级到 WSL2。
+
+#### 首次构建（一键脚本，较慢，约 20–60 分钟）
+
+项目根目录的 `build_android.sh` 会：装系统依赖 → 建虚拟环境装 buildozer → 把源码从 `/mnt/d`
+（Windows 文件系统，权限受限）复制到 WSL 家目录 `~/greedy-dash-build`（原生 ext4）→ `buildozer android debug`。
+
+```bash
+# Windows 管理员 PowerShell：先确认/升级到 WSL2，再在 Ubuntu 终端里运行
+bash /mnt/d/TYW/Code/Games/01-shooting/greedy-dash/build_android.sh
+```
+
+产物：`~/greedy-dash-build/bin/greedydash-4.0.0-arm64-v8a-debug.apk`。
+首次会下载 Android SDK/NDK 并编译 hostpython3、jpeg、SDL2、pygame 等原生库，耗时主要在编译。
+
+#### 改代码后增量重打（推荐，很快，几分钟）
+
+> 只改 Python 游戏代码（main.py / ui.py / boss.py 等）时，**不要重跑 `build_android.sh`**
+> （它会 `rm -rf ~/greedy-dash-build` 清掉已编译缓存，从头再来）。原生库已缓存，只需重打包。
+
+```bash
+# 在 WSL 里：把 Windows 上改好的源码同步进构建目录（* 不会动 .buildozer 缓存）
+cp -r /mnt/d/TYW/Code/Games/01-shooting/greedy-dash/* ~/greedy-dash-build/
+
+source ~/venv_buildozer/bin/activate
+cd ~/greedy-dash-build
+buildozer android debug
+```
+
+新 APK 覆盖 `~/greedy-dash-build/bin/greedydash-4.0.0-arm64-v8a-debug.apk`。
+（只同步改动用 `cp` 即可；若要连删除也同步，用
+`rsync -a --exclude='.buildozer' /mnt/d/TYW/Code/Games/01-shooting/greedy-dash/ ~/greedy-dash-build/`）
+
+#### 把 APK 拷回 Windows 项目根目录（方便取用 / 提交）
+
+```bash
+cp ~/greedy-dash-build/bin/greedydash-*.apk /mnt/d/TYW/Code/Games/01-shooting/greedy-dash/
+```
+
+之后在资源管理器打开 `D:\TYW\Code\Games\01-shooting\greedy-dash\` 即可拿到 APK；
+手机开启 USB 调试后可用 `adb install greedydash-4.0.0-arm64-v8a-debug.apk` 安装（debug 签名可直接装）。
+
+#### 踩坑提示（首次构建可能遇到）
+
+- 编译 hostpython3 前需 `sudo apt install -y libssl-dev`，否则 pip 无 SSL 模块、下不了依赖。
+- p4a 不会自动装 Cython：需给 hostpython3 手动装 `Cython>=3.1,<4`
+  （hostpython3 是 Python 3.14，需 Cython≥3.1），否则 pygame 的 `build_ext` 报缺 Cython。
+- Gradle Wrapper 会联网下 `gradle-8.14.3-all.zip`，WSL 连不上时把手动下载的 zip 放到
+  `~/.gradle/wrapper/dists/gradle-8.14.3-all/<hash>/` 即可离线。
+- 若 pygame 配方编译报错，把 `buildozer.spec` 里 `requirements = python3,pygame==2.5.2`
+  的 `pygame==2.5.2` 改成 `pygame==2.1.2` 重试。
+
+#### 配置要点
+
+- `buildozer.spec` 已设 `orientation = portrait`（竖屏）、`android.archs = arm64-v8a`、
+  `requirements = python3,pygame==2.5.2`、`source.include_exts = py,png,jpg,ico,ttf,...`。
+- 游戏已用 `ANDROID_ARGUMENT` 自动识别安卓并全屏，无需额外改代码。
+- **内置中文字体**：`fonts/simhei.ttf` 随包打入，`ui.get_font` 优先加载，Android 中文不再变方框
+  （PC 也统一用该字体）。若公开发布 APK，建议替换为 SIL 开源的 **Noto Sans SC** 等可自由分发字体
+  （把字体放进 `fonts/` 并改 `ui._FONT_PATH`）。
+
 ## ⚙️ 技术栈
 
 | 模块 | 技术 |
@@ -204,7 +297,8 @@ venv\Scripts\python.exe -m PyInstaller GreedyDash.spec
 | 语言 | Python 3.12 |
 | 游戏框架 | Pygame 2.x（纯代码绘制，零外部素材） |
 | 混合模式 | `BLEND_ADD` 实现子弹/光晕叠加发光 |
-| 打包 | PyInstaller → 单个 `贪逼牛逼.exe` |
+| 打包(Windows) | PyInstaller → 单个 `贪逼牛逼.exe` |
+| 打包(Android) | buildozer / python-for-android → APK（需 Linux/WSL） |
 | 字体 | 系统中文矢量字体（Microsoft YaHei / SimHei 回退） |
 
 ## 📝 版本信息
@@ -212,10 +306,17 @@ venv\Scripts\python.exe -m PyInstaller GreedyDash.spec
 - 工程名 / 游戏名：**Greedy Dash**
 - 作者：**波斯睫毛**
 - 打包 exe 名：**贪逼牛逼**
-- 当前版本：**3.1.0**
+- 当前版本：**4.0.0**
 - 引擎：Pygame
 
 ### 版本更新说明
+
+**v4.0.0 — 2026-07-24**
+- **手机版性能优化（Android）**：
+  - 主菜单帧率：文字与按钮装饰预烘焙到不透明面，每帧纯不透明 blit，消除 SRCALPHA 逐像素 alpha 合成，主界面从约 16 FPS 提升至稳定 60 FPS（PC 视觉效果不变）。
+  - BOSS 过场动画：光晕背景按脉冲量化预渲染 5 档帧，每帧仅 1 次不透明 blit + 实时 BOSS 本体动画，过场从约 11 FPS 提升至 20–30 FPS（可接受流畅度）。
+  - 字体缓存：`get_font()` 按 `(size, bold)` 缓存 Font 对象，消除每帧重复创建 Font、从 APK 内读取 TTF 的开销。
+  - 修复击败 BOSS 后白屏闪退：闪白效果改回 SRCALPHA 遮罩方式（原 `blit(BLEND_RGB_ADD)` 在 `Surface.fill()` 上不兼容导致崩溃）。
 
 **v3.1.0 — 2026-07-22**
 - **棱镜哨卫（第 10 关）转阶段修复**：转阶段时强制回到预警起始状态并显示新段位置，新段攻击不再瞬秒玩家（phase_cd 缓冲生效，玩家有走位时间）。

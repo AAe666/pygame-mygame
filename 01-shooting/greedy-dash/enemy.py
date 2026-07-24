@@ -8,6 +8,7 @@ import random
 import pygame
 
 from settings import *
+import settings as S
 from player import _glow  # 复用发光表面缓存
 
 
@@ -119,7 +120,7 @@ class Monster:
             self.dead = True
 
     def off_screen(self):
-        return self.y > SCREEN_H + MONSTER_H
+        return self.y > S.SCREEN_H + MONSTER_H
 
     def reached_player_line(self, py):
         """怪物纵向已抵达玩家所在行（无论横向位置）。
@@ -185,7 +186,7 @@ class BigChest:
 
     def off_bottom(self):
         """到达底部边界（完全离开屏幕下沿）后消失。"""
-        return self.y - BIG_CHEST_SIZE // 2 > SCREEN_H
+        return self.y - BIG_CHEST_SIZE // 2 > S.SCREEN_H
 
     def draw(self, screen, t):
         x, y = self.x, self.y

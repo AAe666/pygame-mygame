@@ -5,16 +5,63 @@ Treasure Dash - 竖屏射击小游戏（主程序）
 打包：venv/Scripts/python.exe -m PyInstaller GreedyDash.spec
 
 玩法：
-- 移动鼠标控制单位队列左右平移（仅横向，Y 固定在底部）
+- 移动鼠标（或手指）控制单位队列左右平移（仅横向，Y 固定在底部）
 - 自动向上射击：左侧打宝箱拿奖励，右侧打怪物求生存
+- 技能：点击左上角「无敌 / 分身」图标释放（PC 也可用左键/右键任意处释放）
 - ESC 暂停 / 继续，结束点按钮重开
 - 主菜单选择难度：简单 / 普通 / 困难 / 噩梦
+- 移动端：虚拟分辨率宽度固定 480，高度按设备宽高比自适应（铺满长屏零黑边），等比缩放触摸自动识别
 """
 import math
+import os
 import random
 import sys
+import traceback
+import faulthandler
+
+# ---------- 启动诊断：原生层崩溃(SIGSEGV/Abort)也能把 Python 栈打到 logcat ----------
+_BOOT_LOG = os.path.join(os.path.dirname(os.path.abspath(__file__)), "boot.log")
+
+
+def _log(msg):
+    """同时写 boot.log 与 stdout（p4a 中 stdout -> logcat，无线调试可见）。"""
+    try:
+        with open(_BOOT_LOG, "a", encoding="utf-8") as f:
+            f.write(msg + "\n")
+    except Exception:
+        pass
+    try:
+        sys.stdout.write(msg + "\n")
+        sys.stdout.flush()
+    except Exception:
+        pass
+
+
+# 注意：p4a(Android) 把 sys.stderr 重定向到 logcat，它没有真实 fileno；
+# faulthandler.enable() 无参时会取 sys.stderr.fileno()，在 Android 上抛
+# io.UnsupportedOperation: fileno。故传入一个真实文件对象，崩溃栈落盘到 fault.log。
+_fault_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "fault.log")
+_fault_fh = open(_fault_path, "a", encoding="utf-8")
+faulthandler.enable(file=_fault_fh)  # C 层崩溃时把 Python 调用栈写入 fault.log
+_log("boot: faulthandler enabled")
+
+
+def _excepthook_top(exc_type, exc_val, exc_tb):
+    """模块级兜底：import 阶段 / 进入 main 之前的 Python 异常也能落盘，便于无数据线排查。"""
+    text = "".join(traceback.format_exception(exc_type, exc_val, exc_tb))
+    _log("FATAL (pre-main):\n" + text)
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"),
+                  "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        pass
+
+
+sys.excepthook = _excepthook_top
 
 import pygame
+_log("boot: pygame imported")
 
 import settings as S
 from player import Player, _glow, _glow_alpha
@@ -22,6 +69,152 @@ from enemy import Chest, Monster, BigChest
 from boss import make_boss
 from particle import ParticleSystem, StarField
 import ui
+_log("boot: all game modules imported")
+
+
+# ---------- 显示抽象：虚拟分辨率 -> 真实屏幕（等比铺满）----------
+# 游戏以宽度 480、高度自适应的虚拟表面绘制：PC 固定 480x720；手机端启动时
+# 按设备宽高比算出的高度（_apply_virtual_height），使虚拟比例 = 设备比例，
+# 等比缩放后铺满全屏、零黑边，且模型始终等比不变形。输入坐标经 to_virtual 换算。
+VW, VH = S.SCREEN_W, S.SCREEN_H
+# 触摸事件常量（部分平台无此属性，用 getattr 兼容）
+FINGERDOWN = getattr(pygame, "FINGERDOWN", -1)
+
+
+class View:
+    """虚拟表面（固定 480x720，与 PC 同比例）到真实屏幕的等比缩放/坐标换算。
+    手机长屏（比例比 2:3 更瘦高）下：游戏按原始比例居中铺满宽度，
+    上下多余区域（信箱黑边）由 _draw_frame 用主题装饰填充，而非纯黑。"""
+
+    def __init__(self, real):
+        self.real = real
+        self._play_buf = None       # 缩放后的游戏画面缓存（仅信箱化时用到）
+        self._bar_pattern = None    # 黑边装饰点阵（按窗口宽重建）
+        self._title = None
+        self._author = None
+        self.recompute(real.get_size())
+
+    def recompute(self, size):
+        self.w, self.h = size
+        self.scale = min(self.w / VW, self.h / VH) or 1.0
+        self.dx = (self.w - VW * self.scale) / 2.0
+        self.dy = (self.h - VH * self.scale) / 2.0
+        self._build_decor()
+
+    def to_virtual(self, px, py):
+        return ((px - self.dx) / self.scale, (py - self.dy) / self.scale)
+
+    def _build_decor(self):
+        """构建黑边装饰。PC 用原深紫渐变+宝石点阵 tile；Android 用太空背景
+        （整张预渲染，每帧一次 blit）。用确定性随机不扰动游戏序列。"""
+        w, h = self.w, self.h
+        is_android = "ANDROID_ARGUMENT" in os.environ
+        if is_android:
+            # Android：太空背景（整张 real 尺寸预渲染，每帧只 blit 一次）
+            bg = pygame.Surface((w, h))
+            top, bot = (12, 8, 32), (2, 2, 12)
+            for y in range(h):
+                t = y / h
+                col = (int(top[0] + (bot[0] - top[0]) * t),
+                       int(top[1] + (bot[1] - top[1]) * t),
+                       int(top[2] + (bot[2] - top[2]) * t))
+                pygame.draw.line(bg, col, (0, y), (w, y))
+            rng = random.Random(20260724)
+            star_count = max(40, int(w * h / 550))
+            for _ in range(star_count):
+                x = rng.randint(0, w - 1)
+                y = rng.randint(0, h - 1)
+                b = rng.randint(80, 230)
+                r = 1 if rng.random() > 0.12 else 2
+                pygame.draw.circle(bg, (b, b, min(255, b + 25)), (x, y), r)
+            self._space_bg = bg
+        else:
+            # PC：原深紫渐变 + 宝石点阵 tile（不改）
+            tile = pygame.Surface((w, 40))
+            top, bot = (26, 16, 48), (10, 12, 30)
+            for y in range(40):
+                t = y / 40.0
+                col = (int(top[0] + (bot[0] - top[0]) * t),
+                       int(top[1] + (bot[1] - top[1]) * t),
+                       int(top[2] + (bot[2] - top[2]) * t))
+                pygame.draw.line(tile, col, (0, y), (w, y))
+            gem_cols = ((255, 210, 90), (255, 120, 150), (120, 200, 255), (200, 120, 255))
+            for row in range(4):
+                yy = 6 + row * 11
+                off = (row * 23) % 92
+                for gx in range(off, w, 92):
+                    c = gem_cols[(gx // 92 + row) % len(gem_cols)]
+                    r = 1 if (gx // 92) % 3 else 2
+                    pygame.draw.circle(tile, c, (gx, yy), r)
+            self._bar_pattern = tile
+        self._title = ui.get_font(min(34, w // 12), bold=True).render(
+            "GREEDY DASH", True, (255, 230, 255))
+        self._author = ui.get_font(14).render("作者：%s" % S.AUTHOR, True, S.C_TEXT_DIM)
+
+    def _draw_frame(self, dx, dy, sw, sh):
+        """铺装饰（PC 循环 tile / Android 一次 blit 太空背景），游戏区加科幻描边。"""
+        real = self.real
+        if hasattr(self, '_space_bg'):
+            real.blit(self._space_bg, (0, 0))
+        else:
+            yy = 0
+            while yy < self.h:
+                real.blit(self._bar_pattern, (0, yy))
+                yy += 40
+        pygame.draw.rect(real, S.C_DIVIDER, (dx - 1, dy - 1, sw + 2, sh + 2), 1)
+        if dy >= 40:
+            real.blit(self._title, self._title.get_rect(center=(self.w // 2, dy // 2)))
+        if dy >= 26:
+            if hasattr(self, '_space_bg'):
+                real.blit(self._author, self._author.get_rect(
+                    midright=(self.w - 12, self.h - dy // 2)))
+            else:
+                real.blit(self._author, self._author.get_rect(
+                    center=(self.w // 2, self.h - dy // 2)))
+
+    def present(self, virtual):
+        dx = int(round(self.dx))
+        dy = int(round(self.dy))
+        sw = int(round(VW * self.scale))
+        sh = int(round(VH * self.scale))
+        if sw == self.w and sh == self.h:
+            # 无黑边：直接铺满（1:1 或等比缩放）
+            if abs(self.scale - 1.0) < 1e-6:
+                self.real.blit(virtual, (0, 0))
+            else:
+                pygame.transform.scale(virtual, (self.w, self.h), self.real)
+            return
+        # 信箱化（手机长屏上下黑边）：太空背景填充 + 游戏区居中
+        self._draw_frame(dx, dy, sw, sh)
+        if sw == VW and sh == VH:
+            # scale=1：直接 blit，省去 transform.scale 的逐像素拷贝
+            self.real.blit(virtual, (dx, dy))
+        else:
+            if self._play_buf is None or self._play_buf.get_size() != (sw, sh):
+                self._play_buf = pygame.Surface((sw, sh))
+            pygame.transform.scale(virtual, (sw, sh), self._play_buf)
+            self.real.blit(self._play_buf, (dx, dy))
+
+
+# ---------- 安卓端虚拟高度自适应 ----------
+def _apply_virtual_height(vh):
+    """手机端：把虚拟画布高度设为 vh（由设备宽高比算出），使等比缩放后铺满
+    全屏、零黑边；模型始终等比缩放不变形。同时重算 ui 模块里在 import 时
+    用旧 SCREEN_H 算好的矩形常量，避免布局错位。"""
+    global VW, VH
+    VH = vh
+    S.SCREEN_H = vh
+    ui.RESUME_BTN = pygame.Rect(S.SCREEN_W // 2 - 110, S.SCREEN_H // 2 - 100, 220, 50)
+    ui.PAUSE_RESTART_BTN = pygame.Rect(S.SCREEN_W // 2 - 110, S.SCREEN_H // 2 - 40, 220, 50)
+    ui.PAUSE_MENU_BTN = pygame.Rect(S.SCREEN_W // 2 - 110, S.SCREEN_H // 2 + 20, 220, 50)
+    ui.DOC_BTN_Y = S.SCREEN_H - 46
+    ui.DOC_PREV_BTN = pygame.Rect(40, ui.DOC_BTN_Y, 90, 32)
+    ui.DOC_NEXT_BTN = pygame.Rect(S.SCREEN_W - 130, ui.DOC_BTN_Y, 90, 32)
+    ui.DOC_BACK_BTN = pygame.Rect(S.SCREEN_W // 2 - 60, ui.DOC_BTN_Y, 120, 32)
+    ui.HELP_CONTENT_BOTTOM = ui.DOC_BTN_Y - 12
+    ui.HELP_CONTENT_H = ui.HELP_CONTENT_BOTTOM - ui.HELP_CONTENT_TOP
+    ui.RESTART_BTN = pygame.Rect(S.SCREEN_W // 2 - 230, S.SCREEN_H - 130, 220, 50)
+    ui.MENU_BACK_BTN = pygame.Rect(S.SCREEN_W // 2 + 10, S.SCREEN_H - 130, 220, 50)
 
 
 # ---------- 预生成静态表面 ----------
@@ -85,6 +278,7 @@ class Bullet:
 class Game:
     def __init__(self, screen):
         self.screen = screen
+        self.touch_mode = False     # 触屏设备（安卓）下设为 True，切换技能释放方式
         self.bg = make_background()
         self.divider = make_divider()
         self.glow_out = _glow(7, S.C_BULLET_OUT)
@@ -130,6 +324,8 @@ class Game:
         self.boss = None
         self.boss_bullets = []
         self.boss_intro_timer = 0.0
+        self._flash_buf = pygame.Surface((S.SCREEN_W, S.SCREEN_H), pygame.SRCALPHA)
+        self._intro_frames = None  # BOSS 过场预渲染帧列表（5 档脉冲，每帧纯 opaque blit）
         self.kill_count = 0
         self.bosses_defeated = 0
         self.game_time = 0.0
@@ -236,8 +432,40 @@ class Game:
         self.big_chest = None
         self.bullets = []
         self.boss_bullets = []
+        self._intro_frames = None  # 新 BOSS 需重新渲染过场帧
         self.wave_state = "boss_intro"
         self.boss_intro_timer = S.BOSS_INTRO_TIME
+
+    def _build_intro_frames(self):
+        """预渲染 5 帧光晕背景（暗底+分割线+脉冲光晕），BOSS 本体每帧实时画保证动画。"""
+        layers = ((150, (180, 40, 120)), (100, (255, 80, 150)), (60, (255, 200, 200)))
+        cx, cy = S.SCREEN_W // 2, S.SCREEN_H // 2 - 20
+        # 暗底 + 分割线
+        base = pygame.Surface((S.SCREEN_W, S.SCREEN_H))
+        base.fill((8, 4, 18))
+        base.blit(self.divider, (S.DIVIDER_X - 1, 0))
+        # 构建 5 帧（脉冲量化 5 档），光晕用 alpha 合成烘焙进去
+        self._intro_frames = []
+        for q in range(5):
+            pulse = 0.82 + q * 0.09
+            frame = base.copy()
+            for base_r, col in layers:
+                glows = ui._INTRO_GLOW_CACHE.get(base_r)
+                if glows is None:
+                    glows = []
+                    for pct in (82, 90, 98, 106, 114):
+                        r = max(2, int(base_r * pct / 100))
+                        g = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
+                        for rr in range(r, 0, -2):
+                            a = int(70 * (1 - rr / r))
+                            pygame.draw.circle(g, (*col, a), (r, r), rr)
+                        glows.append((r, g))
+                    ui._INTRO_GLOW_CACHE[base_r] = glows
+                idx = int((pulse - 0.82) / 0.36 * len(glows))
+                idx = max(0, min(len(glows) - 1, idx))
+                r, g = glows[idx]
+                frame.blit(g, (int(cx - r), int(cy - r)))
+            self._intro_frames.append(frame)
 
     def _start_boss_fight(self):
         self.boss.intro = False
@@ -476,8 +704,10 @@ class Game:
             return
 
         self.game_time += dt
-        mx, _ = pygame.mouse.get_pos()
-        self.player.follow_mouse(mx, dt)
+        mx, my = ui._mouse
+        # Android：道具槽区域（左上角）不跟随鼠标，避免点击道具释放时玩家飘到道具 x 位置
+        if not ("ANDROID_ARGUMENT" in os.environ and mx < 55 and my < 130):
+            self.player.follow_mouse(mx, dt)
         self.player.update(dt)
 
         if self.player.should_fire():
@@ -536,11 +766,24 @@ class Game:
 
     # ---------- 绘制 ----------
     def draw(self):
+        # BOSS 过场：烘焙背景（暗底+分割线+光晕）+ 实时 BOSS 动画 + 文字
+        if self.wave_state == "boss_intro" and self.boss is not None:
+            if self._intro_frames is None:
+                self._build_intro_frames()
+            pulse = 1 + 0.18 * math.sin(self.boss.t * 4)
+            q = int((pulse - 0.82) / 0.36 * 4 + 0.5)
+            q = max(0, min(4, q))
+            self.screen.blit(self._intro_frames[q], (0, 0))
+            self.boss.draw(self.screen, self.boss.t)
+            ui.draw_boss_intro_name(self.screen, self.boss.name, self.boss.phase,
+                                    self.boss.t)
+            return
+
         self.screen.blit(self.bg, (0, 0))
         self.stars.draw(self.screen)
 
         if self.state == "menu":
-            ui.draw_main_menu(self.screen, self.ui_t)
+            ui.draw_main_menu_fast(self.screen, self.ui_t)
             return
         if self.state == "help":
             self.help_content_h = ui.draw_help_page(
@@ -567,16 +810,11 @@ class Game:
             f.draw(self.screen)
 
         if self.state == "playing" or self.state == "paused":
-            self.hud.draw(self.screen, self.player, self.wave, self.global_level)
+            self.hud.draw(self.screen, self.player, self.wave, self.global_level, self.touch_mode)
             ui.draw_pause_button(self.screen,
-                                 ui.PAUSE_BTN.collidepoint(pygame.mouse.get_pos()))
+                                 ui.PAUSE_BTN.collidepoint(ui._mouse))
 
-        if self.wave_state == "boss_intro" and self.boss is not None:
-            ui.draw_boss_intro(self.screen, self.boss.t)
-            self.boss.draw(self.screen, self.boss.t)
-            ui.draw_boss_intro_name(self.screen, self.boss.name, self.boss.phase,
-                                    self.boss.t)
-        elif self.wave_state == "boss" and self.boss is not None:
+        if self.wave_state == "boss" and self.boss is not None:
             self.boss.draw_hp_bar(self.screen)
 
         if self.wave_banner_timer > 0:
@@ -591,9 +829,8 @@ class Game:
 
         if self.flash > 0:
             a = min(255, int(200 * (self.flash / 0.18)))
-            f = pygame.Surface((S.SCREEN_W, S.SCREEN_H), pygame.SRCALPHA)
-            f.fill((255, 255, 255, a))
-            self.screen.blit(f, (0, 0))
+            self._flash_buf.fill((255, 255, 255, a))
+            self.screen.blit(self._flash_buf, (0, 0))
 
         if self.big_reward is not None and self.state == "playing":
             msg, col, _ = self.big_reward
@@ -614,6 +851,45 @@ class Game:
             self.screen.blit(tip, (10, S.SCREEN_H - 60))
 
 
+def show_error(real, exc):
+    """未捕获异常时把 traceback 画到 SDL 窗口上，方便无数据线排查。"""
+    text = "".join(traceback.format_exception(type(exc), exc, exc.__traceback__))
+    try:
+        with open(os.path.join(os.path.dirname(os.path.abspath(__file__)), "crash.log"), "w", encoding="utf-8") as f:
+            f.write(text)
+    except Exception:
+        pass
+    print("===== CRASH TRACEBACK =====")
+    print(text)
+    if real is None:
+        return
+    f = pygame.font.Font(None, 22)   # 默认字体，避免依赖内置中文字体
+    lines = text.strip().splitlines()[-60:]
+    clock = pygame.time.Clock()
+    while True:
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == getattr(pygame, "FINGERDOWN", -1) or ev.type == pygame.MOUSEBUTTONDOWN:
+                pygame.quit(); sys.exit()
+        w, h = real.get_size()
+        surf = pygame.Surface((w, h))
+        surf.fill((30, 0, 0))
+        y = 12
+        for ln in lines:
+            for i in range(0, len(ln), 70):
+                chunk = ln[i:i + 70]
+                surf.blit(f.render(chunk, True, (255, 210, 210)), (10, y))
+                y += 26
+                if y > h - 20:
+                    break
+            if y > h - 20:
+                break
+        real.blit(surf, (0, 0))
+        pygame.display.flip()
+        clock.tick(15)
+
+
 def main():
     # 强制 print 实时输出（避免缓冲导致看不到调试日志）
     try:
@@ -621,25 +897,80 @@ def main():
     except Exception:
         pass
     pygame.init()
-    try:
-        screen = pygame.display.set_mode(
-            (S.SCREEN_W, S.SCREEN_H),
-            pygame.DOUBLEBUF | pygame.SCALED, vsync=1)
-    except pygame.error:
-        screen = pygame.display.set_mode((S.SCREEN_W, S.SCREEN_H))
+    _log("boot: pygame.init ok")
+    IS_ANDROID = "ANDROID_ARGUMENT" in os.environ
+    print("[BOOT] ANDROID_ARGUMENT =", os.environ.get("ANDROID_ARGUMENT"), flush=True)
+
+    # 未捕获异常时把 traceback 画到屏幕上（Android 无数据线也能看到报错）。
+    # 必须在 set_mode 之前安装，否则初始化阶段抛错也抓不到（表现为启动即闪退）。
+    _real_holder = {"real": None}
+    def _excepthook(exc_type, exc_val, exc_tb):
+        show_error(_real_holder["real"], exc_val)
+    sys.excepthook = _excepthook
+
+    if IS_ANDROID:
+        # SCALED + GPU 缩放。关键：用「实际窗口物理尺寸」(get_window_size) 而非
+        # 桌面分辨率 (get_desktop_sizes) 来算 real surface 高度——后者含状态栏，
+        # 比例不匹配会导致 SDL letterbox 产生左右纯黑边（游戏被缩小居中）。
+        # 先 probe 一次拿到实际窗口尺寸，再用匹配比例的尺寸重新 set_mode。
+        try:
+            pygame.display.set_mode((VW, VH), pygame.SCALED)
+            pw, ph = pygame.display.get_window_size()
+            print("[BOOT] window physical=%dx%d" % (pw, ph), flush=True)
+        except Exception as e:
+            print("[BOOT] probe failed (%s)" % e, flush=True)
+            pw, ph = 1440, 2867
+        # 防止横竖反转
+        if pw > ph:
+            pw, ph = ph, pw
+        real_h = int(VW * ph / pw)
+        print("[BOOT] window %dx%d -> real surface %dx%d"
+              % (pw, ph, VW, real_h), flush=True)
+        try:
+            real = pygame.display.set_mode((VW, real_h), pygame.SCALED)
+            print("[BOOT] SCALED ok, surface=%s" % (real.get_size(),), flush=True)
+        except Exception as e:
+            print("[BOOT] SCALED failed (%s), fallback FULLSCREEN" % e, flush=True)
+            real = pygame.display.set_mode((VW, real_h), pygame.FULLSCREEN)
+    else:
+        # PC：窗口 480x720，可拖拽放大（放大后信箱化保持比例），不改
+        real = pygame.display.set_mode((VW, VH), pygame.DOUBLEBUF | pygame.RESIZABLE)
+    _real_holder["real"] = real
+    print("[BOOT] real surface size =", real.get_size(), flush=True)
+    _log("boot: set_mode ok")
+
+    virtual = pygame.Surface((VW, VH))
+    view = View(real)
     pygame.display.set_caption("%s  作者：%s" % (S.TITLE, S.AUTHOR))
     clock = pygame.time.Clock()
-    game = Game(screen)
+    fps_font = ui.get_font(13)
+    game = Game(virtual)
+    _log("boot: Game created")
     fps_timer = 0.0
+    fps_surf = None       # Android：缓存 FPS 文字 surface（下黑边显示，0.25s 更新）
 
+    _log("boot: entering main loop")
     while True:
         dt = min(clock.tick(S.FPS) / 1000.0, 0.05)
 
-        fps_timer += dt
-        if fps_timer >= 0.5:
-            fps_timer = 0.0
-            pygame.display.set_caption(
-                "%s  作者：%s  FPS:%.0f" % (S.TITLE, S.AUTHOR, clock.get_fps()))
+        if IS_ANDROID:
+            # Android：0.25s 缓存 FPS surface 供下黑边显示
+            fps_timer += dt
+            if fps_timer >= 0.25:
+                fps_timer = 0.0
+                fps_surf = fps_font.render("FPS %.0f" % clock.get_fps(), True, (150, 210, 255))
+        else:
+            # PC：原 0.5s 更新 caption（不改）
+            fps_timer += dt
+            if fps_timer >= 0.5:
+                fps_timer = 0.0
+                pygame.display.set_caption(
+                    "%s  作者：%s  FPS:%.0f" % (S.TITLE, S.AUTHOR, clock.get_fps()))
+
+        # 真实鼠标/触摸坐标 -> 虚拟坐标，供 update 与绘制使用
+        rx, ry = pygame.mouse.get_pos()
+        vx, vy = view.to_virtual(rx, ry)
+        ui.set_mouse_pos(vx, vy)
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
@@ -649,6 +980,11 @@ def main():
                 if game.state == "playing":
                     if event.gain == 0 and (event.state & 2 or event.state & 4):
                         game.state = "paused"
+            elif event.type == FINGERDOWN:
+                # 触屏设备：切换到触摸操作模式（技能改点图标释放）
+                game.touch_mode = True
+            elif event.type == pygame.VIDEORESIZE:
+                view.recompute((event.w, event.h))
             elif event.type == pygame.KEYDOWN:
                 print("[KEY] %d (%s) state=%s" % (event.key, pygame.key.name(event.key), game.state), flush=True)
                 # 作弊码检测：累积字母输入，匹配 bosijiemao 触发 9999 秒无敌（v3.1.0）
@@ -704,7 +1040,7 @@ def main():
                         game.help_page = (game.help_page + 1) % ui.DOC_PAGE_COUNT
                         game.help_scroll = 0
             elif event.type == pygame.MOUSEBUTTONDOWN:
-                mx, my = event.pos
+                mx, my = view.to_virtual(*event.pos)
                 if game.state == "menu":
                     for i, (key, name, desc, col) in enumerate(ui.MENU_ITEMS):
                         if ui.menu_btn_rect(i).collidepoint(mx, my):
@@ -757,17 +1093,29 @@ def main():
                 else:  # playing
                     if ui.PAUSE_BTN.collidepoint(mx, my):
                         game.state = "paused"
-                    elif event.button == 1 and game.player.invuln_item \
+                    elif ui.invuln_slot_rect().collidepoint(mx, my) \
+                            and game.player.invuln_item \
                             and game.wave_state in ("active", "boss"):
-                        # 左键使用无敌道具
+                        # 点左上角无敌图标释放（PC/手机通用）
                         game.player.use_invuln()
-                    elif event.button == 3 and game.player.clone_item \
+                    elif ui.clone_slot_rect().collidepoint(mx, my) \
+                            and game.player.clone_item \
                             and game.wave_state in ("active", "boss"):
-                        # 右键释放分身道具
+                        # 点左上角分身图标释放（PC/手机通用）
+                        game.player.use_clone()
+                    elif not game.touch_mode and event.button == 1 \
+                            and game.player.invuln_item \
+                            and game.wave_state in ("active", "boss"):
+                        # PC 兼容：左键任意处放无敌
+                        game.player.use_invuln()
+                    elif not game.touch_mode and event.button == 3 \
+                            and game.player.clone_item \
+                            and game.wave_state in ("active", "boss"):
+                        # PC 兼容：右键任意处分身
                         game.player.use_clone()
             elif event.type == pygame.MOUSEMOTION:
                 if game.state == "help" and game.help_dragging:
-                    my = event.pos[1]
+                    _, my = view.to_virtual(*event.pos)
                     track = ui.help_scrollbar_track_rect()
                     ms = ui.help_max_scroll(game.help_content_h)
                     if ms > 0:
@@ -787,8 +1135,21 @@ def main():
 
         game.update(dt)
         game.draw()
+        if not IS_ANDROID and game.state == "playing":
+            # PC：原 FPS 诊断浮层在 virtual 左下角（不改）
+            _fs = fps_font.render("FPS %.0f" % clock.get_fps(), True, (150, 210, 255))
+            virtual.blit(_fs, (6, S.SCREEN_H - 18))
+        view.present(virtual)
+        if IS_ANDROID:
+            if fps_surf is not None and view.dy >= 20:
+                # Android：FPS 显示在下黑边左侧（太空背景区域）
+                real.blit(fps_surf, (12, int(view.h - view.dy / 2) - fps_surf.get_height() // 2))
         pygame.display.flip()
 
 
 if __name__ == "__main__":
-    main()
+    try:
+        main()
+    except Exception as e:
+        # main 未进入（如 pygame.init C 层崩溃）或 show_error 自身异常时的兜底
+        show_error(None, e)

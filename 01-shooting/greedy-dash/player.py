@@ -7,11 +7,13 @@
 - 怪物碰到任一单位，该单位立即消失；只要还有单位存活，游戏继续。
 """
 import math
+import os
 import random
 
 import pygame
 
 from settings import *
+import settings as S
 
 
 class Player:
@@ -20,7 +22,8 @@ class Player:
 
     def reset(self):
         self.x = SCREEN_W // 2          # 队列中心 x
-        self.y = PLAYER_Y
+        # 玩家固定在底部：跟随 SCREEN_H，使手机端按设备比例拉高后玩家依旧贴底
+        self.y = S.SCREEN_H - PLAYER_BOTTOM_GAP
         self.units = 1                   # 当前单位数量
         self.alive_units = [True]        # 每个单位存活状态
         self.shields = [False]           # 每个单位的护盾状态（与 alive_units 对齐）
@@ -251,10 +254,10 @@ class Player:
 _GLOW_CACHE = {}
 
 def _glow(radius, color):
-    key = (int(radius), color)
+    r = int(radius)
+    key = (r, color)
     if key in _GLOW_CACHE:
         return _GLOW_CACHE[key]
-    r = int(radius)
     surf = pygame.Surface((r * 2, r * 2), pygame.SRCALPHA)
     for rr in range(r, 0, -1):
         alpha = int(180 * (1 - rr / r))

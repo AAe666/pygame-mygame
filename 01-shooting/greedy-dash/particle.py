@@ -8,6 +8,7 @@ import random
 import pygame
 
 from settings import *
+import settings as S
 from player import _glow_alpha
 
 
@@ -50,6 +51,9 @@ class ParticleSystem:
         self.particles = []
 
     def spawn(self, x, y, vx, vy, life, color, size, additive=False, gravity=0):
+        # 超过上限丢弃最旧粒子，避免弹幕爆炸时大量粒子堆积拖慢手机渲染
+        if len(self.particles) >= S.PARTICLE_CAP:
+            self.particles.pop(0)
         self.particles.append(Particle(x, y, vx, vy, life, color, size, additive, gravity))
 
     def burst(self, x, y, color, count=14, speed=120, life=0.5, size=3, additive=True):
@@ -77,7 +81,7 @@ class StarField:
     def __init__(self, count=STAR_COUNT):
         self.stars = []
         for _ in range(count):
-            self.stars.append(self._new_star(top=random.randint(0, SCREEN_H)))
+            self.stars.append(self._new_star(top=random.randint(0, S.SCREEN_H)))
 
     def _new_star(self, top=None):
         y = top if top is not None else -5
@@ -94,7 +98,7 @@ class StarField:
         for s in self.stars:
             s["y"] += s["speed"] * dt
             s["tw"] += dt * 3
-            if s["y"] > SCREEN_H + 5:
+            if s["y"] > S.SCREEN_H + 5:
                 s.update(self._new_star(top=-5))
 
     def draw(self, screen):
