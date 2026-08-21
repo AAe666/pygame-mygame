@@ -1,0 +1,40 @@
+name: Build Android APK
+
+on:
+  push:
+    paths:
+      - '01-shooting/greedy-dash/**'
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install buildozer
+        run: pip install buildozer
+
+      - name: Cache buildozer (SDK/NDK/构建缓存)
+        uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: ${{ runner.os }}-buildozer-${{ hashFiles('01-shooting/greedy-dash/buildozer.spec') }}
+          restore-keys: |
+            ${{ runner.os }}-buildozer-
+
+      - name: Build debug APK
+        working-directory: 01-shooting/greedy-dash
+        run: buildozer android debug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: greedydash-apk
+          path: 01-shooting/greedy-dash/bin/*.apk

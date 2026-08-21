@@ -1,0 +1,38 @@
+进入环境
+PS C:\Users\Administrator> wsl
+tyw@MS-VXKUTZOEDOPT:/mnt/c/Users/Administrator$ source ~/venv_buildozer/bin/activate
+
+
+# 1) 同步最新代码到构建目录（保留 .buildozer 缓存，增量几分钟）
+cd /mnt/d/TYW/Code/Games/01-shooting/greedy-dash
+tar --exclude=./.buildozer --exclude=./venv --exclude=./build \
+    --exclude=./dist --exclude=./bin --exclude=./__pycache__ \
+    -cf - . | ( cd ~/greedy-dash-build && tar -xf - )
+
+# 2) 重新打包
+source ~/venv_buildozer/bin/activate
+cd ~/greedy-dash-build
+buildozer android debug
+
+# 3) 安装（手机已配对连接过，直接 install；若断了先 adb connect 192.168.1.200:44401）
+adb install -r ~/greedy-dash-build/bin/greedydash-4.0.0-arm64-v8a-debug.apk
+
+# 4) 验证布局 + FPS 路径
+adb logcat -c
+adb shell am start -n com.greedydash.greedydash/org.kivy.android.PythonActivity
+sleep 5
+adb logcat -d | grep -iE "BOOT|SCALED"
+
+
+
+
+
+
+
+# 重新配对（配对端口，配对码 ）
+adb pair 192.168.1.200:37065 907691
+adb connect 192.168.1.200:41847
+
+
+# 配对成功后连接（连接端口 39299）
+adb connect 192.168.1.200:39299
